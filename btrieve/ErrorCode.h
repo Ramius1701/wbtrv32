@@ -34,7 +34,10 @@ enum BtrieveError {
   BadRecordLength = 28,
   BadKeyLength = 29,
   NotBtrieveFile = 30,
+  TransactionError = 36,
   TransactionIsActive = 37,
+  // End or Abort Transaction without a Begin Transaction
+  NoTransactionActive = 39,
   /* Btrieve version 5.x returns this status code
 if you attempt to perform a Step, Update, or Delete operation on a
 key-only file or a Get operation on a data only file */
@@ -43,8 +46,16 @@ key-only file or a Get operation on a data only file */
   InvalidKeyPath = 44,
   AccessDenied = 46,
   InvalidACS = 48,
+  OwnerAlreadySet = 50,
+  InvalidOwner = 51,
   InvalidInterface = 53,
   FileAlreadyExists = 59,
+  RejectCountReached = 60,
+  IncorrectDescriptor = 62,
+  FilterLimitReached = 64,
+  IncorrectFieldOffset = 65,
+  FileInUse = 85,
+  IncompatibleMode = 88,
 };
 
 const char* errorToString(BtrieveError error);

@@ -235,25 +235,24 @@ void BtrieveDatabase::loadRecords(
   const unsigned int recordsInPage = ((pageLength - 6) / physicalRecordLength);
   unsigned int pageOffset = v6 ? pageLength : 0;
 
-  fseek_s(f, pageLength, SEEK_SET);
-  // Starting at 1, since the first page is the header
-  for (unsigned int i = v6 ? 1 : 0; i < pageCount;
-       i++, pageOffset += pageLength) {
-    // For v6, skip pages that are not active data pages ('D') or variable
-    // data pages ('V') according to the PAT. Shadow copies and index/alloc
-    // pages have type 0x00, 0x80, 'A', etc. and must not be imported.
-    // lookupPATEntry() returns both the PAT type byte and the physical offset
-    // in a single PAT read, avoiding the double-read that would occur if
-    // logicalPagePATType() and logicalPageToPhysicalOffset() were called
-    // separately.
-    uint8_t patType = 'D';
-    int32_t physicalOffset = lookupPATEntry(f, i, patType);
-    if (v6 && patType != 'D' && patType != 'V') {
-      continue;
+  // v6 records live only on the current copy of each data ('D') page, in
+  // logical page order; v5 pages are physical, starting at page 0.
+  std::vector<int32_t> dataPageOffsets;
+  if (v6) {
+    for (const auto& [logicalPage, page] : v6Pages) {
+      if (page.type == 'D') {
+        dataPageOffsets.push_back(
+            static_cast<int32_t>(page.physicalPage * pageLength));
+      }
     }
-    if (physicalOffset < 0) {
-      continue;
+  } else {
+    for (unsigned int i = 0; i < pageCount; i++) {
+      dataPageOffsets.push_back(static_cast<int32_t>(i * pageLength));
     }
+  }
+
+  for (const int32_t physicalOffset : dataPageOffsets) {
+    pageOffset = physicalOffset;
 
     // read in the entire page
     fseek_s(f, physicalOffset, SEEK_SET);
@@ -327,8 +326,12 @@ void BtrieveDatabase::loadRecords(
 
 finished_loaded:
   if (recordsLoaded != recordCount) {
-    fprintf(stderr, "Database contains %d records but read %d!\n", recordCount,
-            recordsLoaded);
+    char message[160];
+    snprintf(message, sizeof(message),
+             "converted %u records, but the file's header says it holds %u",
+             recordsLoaded, recordCount);
+    conversionWarning = message;
+    fprintf(stderr, "%s\n", message);
   }
 }
 
@@ -514,7 +517,9 @@ void BtrieveDatabase::loadKeyDefinitions(FILE* f, const uint8_t* firstPage,
                                                : KeyDataType::OldAscii;
     }
 
-    if (attributes & MultipleACS) {
+    // MultipleACS is two bits, so it must match in full: NumberedACS alone
+    // means the key uses the file's single ACS, not a per-key ACS page.
+    if ((attributes & MultipleACS) == MultipleACS) {
       uint32_t acsLogicalPage = data[0x19] << 16 | toUint16(data + 0x1A);
       if (!loadACS(f, multiAcsName, multiAcs, acsLogicalPage)) {
         throw BtrieveException(BtrieveError::InvalidACS, "Can't load ACS");
@@ -522,6 +527,9 @@ void BtrieveDatabase::loadKeyDefinitions(FILE* f, const uint8_t* firstPage,
 
       keyAcsName = &multiAcsName;
       keyAcs = &multiAcs;
+    } else {
+      keyAcsName = &acsName;
+      keyAcs = &acs;
     }
 
     uint16_t offset = toUint16(data + 0x14);
@@ -572,6 +580,7 @@ void BtrieveDatabase::from(FILE* f) {
 
   if (v6) {
     loadPAT(f, acsName, acs);
+    buildV6PageMap(f);
   } else {
     getRecordPointerList(f, fcrData.deletedRecordPointer, deletedRecordOffsets);
 
@@ -612,6 +621,7 @@ void BtrieveDatabase::getVariableLengthData(
   int16_t fragmentOffset;
   int16_t fragmentLength;
   int16_t lofs;
+  unsigned int fragmentsRead = 0;
   while (true) {
     fragmentNumber = getVRecordFragment(&Vrec);  // for multiple frags
     if (fragmentNumber > 254) {
@@ -642,7 +652,25 @@ void BtrieveDatabase::getVariableLengthData(
     }
     fragmentLength = (fragpp[fragmentIndex - lofs] & 0x7FFF) - fragmentOffset;
 
-    if (v6 || fragpp[fragmentIndex] & 0x8000) {
+    const bool hasNextPointer = v6 || fragpp[fragmentIndex] & 0x8000;
+    // a fragment must lie within the page and, if chained, hold the 4-byte
+    // pointer to the next one -- otherwise this isn't the fragment the record
+    // points at, and copying it would read or write past the page buffer
+    if (fragmentLength < (hasNextPointer ? int16_t{sizeof(VRECPTR)} : 0) ||
+        fragmentOffset + fragmentLength > pageLength) {
+      throw BtrieveException(BtrieveError::NotBtrieveFile,
+                             "Variable-length fragment %d on logical page %d "
+                             "is out of bounds (offset %d, length %d)",
+                             fragmentNumber, getVRecordPage(&Vrec),
+                             fragmentOffset, fragmentLength);
+    }
+
+    if (++fragmentsRead > pageCount) {
+      throw BtrieveException(BtrieveError::NotBtrieveFile,
+                             "Variable-length fragment chain loops");
+    }
+
+    if (hasNextPointer) {
       Vrec = *reinterpret_cast<VRECPTR*>(data + fragmentOffset);
       fragmentOffset += sizeof(VRECPTR);
       fragmentLength -= sizeof(VRECPTR);
@@ -691,6 +719,13 @@ int32_t BtrieveDatabase::lookupPATEntry(FILE* f, int32_t logicalPage,
     return logicalPage * pageLength;
   }
 
+  // data and variable pages: the newest copy, see buildV6PageMap()
+  if (auto it = v6Pages.find(static_cast<uint32_t>(logicalPage));
+      it != v6Pages.end()) {
+    outType = it->second.type;
+    return static_cast<int32_t>(it->second.physicalPage * pageLength);
+  }
+
   // go through the PAT
   uint32_t ret = 2;
   const int32_t pagesPerPAT = (pageLength / 4u) - 2u;
@@ -711,7 +746,7 @@ int32_t BtrieveDatabase::lookupPATEntry(FILE* f, int32_t logicalPage,
   uint8_t* pat2 = pat1 + pageLength;
 
   const uint32_t physicalOffset = ret * pageLength;
-  if (physicalOffset >= (fileLength - pageLength * 2)) {
+  if (physicalOffset + pageLength * 2 > fileLength) {
     // we overflowed, this is junk
     outType = 0xFF;
     return -1;
@@ -735,17 +770,122 @@ int32_t BtrieveDatabase::lookupPATEntry(FILE* f, int32_t logicalPage,
   uint32_t usageCount2 = toUint32(pat2 + 4);
   uint8_t* activePat = (usageCount1 > usageCount2) ? pat1 : pat2;
 
-  // PAT entry layout (4 bytes): [pageNumHigh][typeCode][pageNumLow][pageNumMid]
+  // PAT entry layout (4 bytes): [marker][typeCode][pageNumLow][pageNumMid].
+  // The first byte is usually zero, which is why it was once read as the
+  // page number's high byte, but real files also carry 0xFF there -- so only
+  // trust it as a high byte when that still lands inside the file.
   uint8_t* entry = activePat + (logicalPage * 4) + 4;
   outType = entry[1];  // type byte is at position 1 in the 4-byte entry
 
   int64_t physicalPage = (entry[0] << 16) | (entry[3] << 8) | entry[2];
+  if ((physicalPage + 1) * pageLength > fileLength) {
+    physicalPage = (entry[3] << 8) | entry[2];
+  }
 
-  if (physicalPage == 0xFFFFFFL || physicalPage < 0) {
+  if (outType == 0 || (physicalPage + 1) * pageLength > fileLength) {
     return -1;
   }
 
   return static_cast<int32_t>(physicalPage * pageLength);
+}
+
+// Btrieve 6 never edits a page in place: it writes the new version to a free
+// physical page and repoints the PAT, leaving the old copy behind. Every page
+// header starts with the logical page number it holds, in the same
+// [high][type][low][mid] layout as a PAT entry, followed by a usage count that
+// increases with each rewrite.
+//
+// The PAT itself can't be followed blindly here: its blocks don't always sit
+// at the position the stride formula predicts (a file grown by a page group
+// leaves a gap, and the next block lands after it), and pages abandoned
+// mid-update still carry the "PP" magic. Instead, take every data and variable
+// page's own header at its word and keep the newest copy of each logical page,
+// then use the PAT only to drop logical pages it no longer has allocated. On
+// every file tested this reproduces the record count stored in the FCR
+// exactly, where following the PAT alone lost up to ~16% of records.
+void BtrieveDatabase::buildV6PageMap(FILE* f) {
+  v6Pages.clear();
+
+  const uint32_t physicalPages = fileLength / pageLength;
+  // PAT pages by the block number in their own header ("PP", then block)
+  std::map<uint16_t, std::vector<uint32_t>> patPagesByBlock;
+  uint8_t header[6];
+  // pages 0 and 1 are the FCR shadow pair
+  for (uint32_t physicalPage = 2; physicalPage < physicalPages;
+       ++physicalPage) {
+    fseek_s(f, physicalPage * pageLength, SEEK_SET);
+    fread_s(header, sizeof(header), f);
+
+    if (header[0] == 'P' && header[1] == 'P') {
+      patPagesByBlock[toUint16(header + 2)].push_back(physicalPage);
+      continue;
+    }
+
+    const uint8_t type = header[1];
+    if (type != 'D' && type != 'V') {
+      continue;
+    }
+
+    const uint32_t logicalPage =
+        (header[0] << 16) | (header[3] << 8) | header[2];
+    const uint16_t usageCount = toUint16(header + 4) & 0x7FFF;
+
+    auto [it, inserted] =
+        v6Pages.try_emplace(logicalPage, V6Page{physicalPage, type, usageCount});
+    // highest usage count wins. Not a wrap-aware comparison: a page's first
+    // copy can sit at 0 next to a live copy tens of thousands of writes
+    // ahead, which wrap-aware ordering would mistake for the newer one.
+    if (!inserted && usageCount > it->second.usageCount) {
+      it->second = V6Page{physicalPage, type, usageCount};
+    }
+  }
+
+  // A page's last copy can outlive the logical page itself (freed pages, and
+  // stray pages whose bytes merely look like a header), so keep only logical
+  // pages the PAT still has allocated. Each PAT block is a shadow pair at the
+  // stride position, or -- when the file grew by a page group first -- the
+  // one pair elsewhere carrying that block number.
+  std::unordered_set<uint32_t> allocated;
+  const uint32_t entriesPerBlock = (pageLength - 8u) / 4u;
+  std::vector<uint8_t> pat(pageLength * 2);
+  for (uint16_t block = 1;; ++block) {
+    uint32_t first = 2 + (block - 1u) * (entriesPerBlock + 2u);
+    const auto found = patPagesByBlock.find(block);
+    const bool atStride =
+        found != patPagesByBlock.end() &&
+        std::find(found->second.begin(), found->second.end(), first) !=
+            found->second.end();
+    if (!atStride) {
+      if (found == patPagesByBlock.end() || found->second.size() != 2 ||
+          found->second[1] != found->second[0] + 1) {
+        break;
+      }
+      first = found->second[0];
+    }
+
+    fseek_s(f, first * pageLength, SEEK_SET);
+    fread_s(pat.data(), pageLength * 2, f);
+    const uint8_t* copy1 = pat.data();
+    const uint8_t* copy2 = copy1 + pageLength;
+    const uint8_t* live =
+        toUint32(copy1 + 4) > toUint32(copy2 + 4) ? copy1 : copy2;
+
+    for (uint32_t slot = 0; slot < entriesPerBlock; ++slot) {
+      // entry: [marker][type][page low][page mid]; type 0 = unallocated
+      if (live[8 + slot * 4 + 1] != 0) {
+        allocated.insert((block - 1u) * entriesPerBlock + slot + 1);
+      }
+    }
+  }
+
+  // no readable PAT at all: the page headers are all there is to go on
+  if (allocated.empty()) {
+    return;
+  }
+
+  for (auto it = v6Pages.begin(); it != v6Pages.end();) {
+    it = allocated.count(it->first) ? std::next(it) : v6Pages.erase(it);
+  }
 }
 
 }  // namespace btrieve

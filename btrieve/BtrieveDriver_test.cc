@@ -18,6 +18,10 @@
 #endif
 #include <sys/types.h>
 
+#include <chrono>
+#include <cstring>
+#include <iterator>
+#include <fstream>
 #include <filesystem>
 
 #include "TestBase.h"
@@ -2341,4 +2345,238 @@ TEST_F(BtrieveDriverTest, SeekByKeyInvalidKey) {
 
   ASSERT_EQ(driver.performOperation(4, key, OperationCode::QueryLessOrEqual),
             BtrieveError::InvalidKeyNumber);
+}
+
+// The .db holds the live data once a file has been converted. A .DAT whose
+// timestamp moved but whose contents didn't (copied, touched, restored to the
+// same bytes) must not trigger a reconversion that throws that data away.
+TEST_F(BtrieveDriverTest, TouchedDatKeepsConvertedData) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  {
+    BtrieveDriver driver(new SqliteDatabase());
+    ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
+    ASSERT_GT(driver.getRecordCount(), 0u);
+    driver.deleteAll();  // returns its status as a bool: false = Success
+    ASSERT_EQ(driver.getRecordCount(), 0u);
+  }
+
+  std::filesystem::last_write_time(
+      dat, std::filesystem::file_time_type::clock::now() +
+               std::chrono::hours(1));
+
+  BtrieveDriver driver(new SqliteDatabase());
+  ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
+  EXPECT_EQ(driver.getRecordCount(), 0u);
+  EXPECT_TRUE(driver.getNotices().empty());
+}
+
+// Deleting a converted .DAT is how applications reset a file: Btrieve then
+// reports the file missing, so wbtrv32 must too, keeping the data as .db.bak.
+TEST_F(BtrieveDriverTest, DeletedDatIsReportedMissing) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  {
+    BtrieveDriver driver(new SqliteDatabase());
+    ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
+  }
+
+  ASSERT_TRUE(std::filesystem::remove(std::filesystem::path(dat)));
+
+  BtrieveDriver driver(new SqliteDatabase());
+  EXPECT_EQ(driver.open(dat.c_str()), BtrieveError::FileNotFound);
+  EXPECT_FALSE(driver.getNotices().empty());
+
+  std::filesystem::path db(dat), backup(dat);
+  db.replace_extension(".db");
+  backup.replace_extension(".db.bak");
+  EXPECT_FALSE(std::filesystem::exists(db));
+  EXPECT_TRUE(std::filesystem::exists(backup));
+}
+
+// Files that differ only in extension (a .MST master copy beside its .DAT)
+// must not share one database.
+TEST_F(BtrieveDriverTest, SameNameDifferentExtensionsGetSeparateDatabases) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  std::filesystem::path mst(dat);
+  mst.replace_extension(".MST");
+  std::filesystem::copy_file(std::filesystem::path("assets/VARIABLE.DAT"), mst);
+
+  BtrieveDriver datDriver(new SqliteDatabase());
+  ASSERT_EQ(datDriver.open(dat.c_str()), BtrieveError::Success);
+  BtrieveDriver mstDriver(new SqliteDatabase());
+  ASSERT_EQ(mstDriver.open(mst.wstring().c_str()), BtrieveError::Success);
+
+  EXPECT_NE(datDriver.getRecordCount(), mstDriver.getRecordCount());
+
+  std::filesystem::path mstDb(mst);
+  mstDb += ".db";
+  EXPECT_TRUE(std::filesystem::exists(mstDb));
+  EXPECT_EQ(BtrieveDriver::sqlPathFor(dat, L"db").filename(),
+            std::filesystem::path(L"MBBSEMU.db"));
+  EXPECT_EQ(BtrieveDriver::sqlPathFor(mst, L"db").filename(),
+            std::filesystem::path(L"MBBSEMU.MST.db"));
+}
+
+// Opening the database file itself, by name, again and again must leave it
+// alone: there is no separate Btrieve file to compare it with.
+TEST_F(BtrieveDriverTest, OpeningTheDatabaseDirectlyLeavesItAlone) {
+  auto db = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  const auto originalSize = std::filesystem::file_size(db);
+  for (int i = 0; i < 3; ++i) {
+    BtrieveDriver driver(new SqliteDatabase());
+    ASSERT_EQ(driver.open(db.c_str()), BtrieveError::Success);
+    EXPECT_GT(driver.getRecordCount(), 0u);
+    EXPECT_TRUE(driver.getNotices().empty());
+  }
+  std::filesystem::path backup(db);
+  backup += ".bak";
+  EXPECT_FALSE(std::filesystem::exists(backup));
+  EXPECT_EQ(std::filesystem::file_size(db), originalSize);
+}
+
+// --- marker behaviour -------------------------------------------------------
+
+namespace {
+unsigned int recordsIn(const std::filesystem::path &file,
+                       std::vector<std::string> *notices = nullptr) {
+  BtrieveDriver driver(new SqliteDatabase());
+  if (driver.open(file.wstring().c_str()) != BtrieveError::Success) {
+    return 0xFFFFFFFF;
+  }
+  if (notices != nullptr) {
+    *notices = driver.getNotices();
+  }
+  return driver.getRecordCount();
+}
+
+void emptyOut(const std::filesystem::path &file) {
+  BtrieveDriver driver(new SqliteDatabase());
+  ASSERT_EQ(driver.open(file.wstring().c_str()), BtrieveError::Success);
+  driver.deleteAll();  // returns its status as a bool: false = Success
+  ASSERT_EQ(driver.getRecordCount(), 0u);
+}
+
+bool isMarker(const std::filesystem::path &file) {
+  std::ifstream in(file, std::ios::binary);
+  std::string start(strlen(BtrieveDriver::markerMagic()), '\0');
+  in.read(start.data(), start.size());
+  return start == BtrieveDriver::markerMagic();
+}
+
+std::string contentsOf(const std::filesystem::path &file) {
+  std::ifstream in(file, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+}  // namespace
+
+// After conversion the Btrieve file is replaced by a marker, and the original
+// is kept untouched in wbtrv32-originals.
+TEST_F(BtrieveDriverTest, ConvertedFileBecomesAMarker) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  const std::string original = contentsOf(dat);
+
+  EXPECT_GT(recordsIn(dat), 0u);
+  EXPECT_TRUE(isMarker(dat));
+  EXPECT_EQ(contentsOf(dat.parent_path() / "wbtrv32-originals" / "MBBSEMU.DAT"),
+            original);
+}
+
+// A real Btrieve file put where its marker was (a reset to a blank file, a
+// restore, an upgrade) is new data: converted, with the old data kept.
+TEST_F(BtrieveDriverTest, BtrieveFilePutBackIsConvertedAgain) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  const unsigned int originalCount = recordsIn(dat);
+  emptyOut(dat);
+
+  std::filesystem::copy_file("assets/MBBSEMU.DAT", dat,
+                             std::filesystem::copy_options::overwrite_existing);
+  std::vector<std::string> notices;
+  EXPECT_EQ(recordsIn(dat, &notices), originalCount);
+  EXPECT_FALSE(notices.empty());
+  EXPECT_TRUE(isMarker(dat));
+
+  std::filesystem::path backup(dat);
+  backup.replace_extension(".db.bak");
+  ASSERT_TRUE(std::filesystem::exists(backup));
+  sqlite3 *connection;
+  ASSERT_EQ(sqlite3_open_v2(backup.string().c_str(), &connection,
+                            SQLITE_OPEN_READONLY, nullptr),
+            SQLITE_OK);
+  sqlite3_stmt *count;
+  ASSERT_EQ(sqlite3_prepare_v2(connection, "SELECT COUNT(*) FROM data_t", -1,
+                               &count, nullptr),
+            SQLITE_OK);
+  ASSERT_EQ(sqlite3_step(count), SQLITE_ROW);
+  EXPECT_EQ(sqlite3_column_int(count, 0), 0);  // the emptied data, kept
+  sqlite3_finalize(count);
+  sqlite3_close(connection);
+}
+
+// Renaming the file renames its data: the renamed file has the current data,
+// not the original file's.
+TEST_F(BtrieveDriverTest, RenamedFileTakesItsDataAlong) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  emptyOut(dat);
+
+  std::filesystem::path renamed = dat.parent_path() / "RENAMED.DAT";
+  std::filesystem::rename(dat, renamed);
+
+  std::vector<std::string> notices;
+  EXPECT_EQ(recordsIn(renamed, &notices), 0u);
+  EXPECT_FALSE(notices.empty());
+  EXPECT_TRUE(std::filesystem::exists(dat.parent_path() / "RENAMED.db"));
+  EXPECT_FALSE(std::filesystem::exists(dat.parent_path() / "MBBSEMU.db"));
+}
+
+// Copying the file copies its data: two independent files with the same
+// current contents.
+TEST_F(BtrieveDriverTest, CopiedFileGetsACopyOfItsData) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  const unsigned int originalCount = recordsIn(dat);
+
+  std::filesystem::path copy = dat.parent_path() / "COPY.DAT";
+  std::filesystem::copy_file(dat, copy);
+  EXPECT_EQ(recordsIn(copy), originalCount);
+
+  // emptying the copy leaves the original alone
+  emptyOut(copy);
+  EXPECT_EQ(recordsIn(copy), 0u);
+  EXPECT_EQ(recordsIn(dat), originalCount);
+}
+
+// An empty file beside a database is the placeholder older versions left:
+// the data is kept and the file becomes a marker.
+TEST_F(BtrieveDriverTest, OldEmptyPlaceholderBecomesAMarker) {
+  std::filesystem::path db(tempPath->copyToTempPath("assets/MBBSEMU.DB"));
+  std::filesystem::path dat = db;
+  dat.replace_extension(".DAT");
+  { std::ofstream empty(dat, std::ios::binary); }
+
+  EXPECT_GT(recordsIn(dat), 0u);
+  EXPECT_TRUE(isMarker(dat));
+}
+
+// A database converted by an older version, beside the unchanged Btrieve file
+// it came from, is adopted as it is: no reconversion, original moved aside.
+TEST_F(BtrieveDriverTest, OlderConversionIsAdoptedNotRedone) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  emptyOut(dat);  // now has a marker-era identity; make it look older:
+  std::filesystem::path db = dat;
+  db.replace_extension(".db");
+  {
+    sqlite3 *connection;
+    ASSERT_EQ(sqlite3_open(db.string().c_str(), &connection), SQLITE_OK);
+    sqlite3_exec(connection, "DROP TABLE db_identity_t", nullptr, nullptr,
+                 nullptr);
+    sqlite3_close(connection);
+  }
+  // put the original Btrieve file back, older than the database
+  std::filesystem::copy_file(dat.parent_path() / "wbtrv32-originals" /
+                                 "MBBSEMU.DAT",
+                             dat,
+                             std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::last_write_time(
+      dat, std::filesystem::last_write_time(db) - std::chrono::hours(1));
+
+  EXPECT_EQ(recordsIn(dat), 0u);  // the database's data, not reconverted
+  EXPECT_TRUE(isMarker(dat));
 }

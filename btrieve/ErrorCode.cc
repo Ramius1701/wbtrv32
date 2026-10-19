@@ -46,6 +46,16 @@ const char* errorToString(BtrieveError errorCode) {
     HANDLE_ERROR_CODE(InvalidACS);
     HANDLE_ERROR_CODE(InvalidInterface);
     HANDLE_ERROR_CODE(FileAlreadyExists);
+    HANDLE_ERROR_CODE(TransactionError);
+    HANDLE_ERROR_CODE(NoTransactionActive);
+    HANDLE_ERROR_CODE(OwnerAlreadySet);
+    HANDLE_ERROR_CODE(InvalidOwner);
+    HANDLE_ERROR_CODE(RejectCountReached);
+    HANDLE_ERROR_CODE(IncorrectDescriptor);
+    HANDLE_ERROR_CODE(FilterLimitReached);
+    HANDLE_ERROR_CODE(IncorrectFieldOffset);
+    HANDLE_ERROR_CODE(FileInUse);
+    HANDLE_ERROR_CODE(IncompatibleMode);
 
     default:
       static char buf[16];

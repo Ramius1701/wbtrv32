@@ -31,6 +31,29 @@ class SqliteDatabase : public SqlDatabase {
 
   virtual void close() override;
 
+  virtual bool readSourceFingerprint(SourceFingerprint &fingerprint) override;
+
+  virtual bool readIdentity(const std::filesystem::path &database,
+                            DatabaseIdentity &identity) override;
+
+  virtual bool writeIdentity(const std::filesystem::path &database,
+                             const DatabaseIdentity &identity) override;
+
+  virtual bool copyDatabase(const std::filesystem::path &from,
+                            const std::filesystem::path &to) override;
+
+  virtual bool readOwner(const std::filesystem::path &database,
+                         OwnerInfo &owner) override;
+  virtual bool writeOwner(const std::filesystem::path &database,
+                          const OwnerInfo *owner) override;
+
+  virtual bool beginUserTransaction() override;
+  virtual bool endUserTransaction() override;
+  virtual bool abortUserTransaction() override;
+
+  virtual bool writeSourceFingerprint(
+      const SourceFingerprint &fingerprint) override;
+
   virtual BtrieveError stepFirst() override;
   virtual BtrieveError stepLast() override;
   virtual BtrieveError stepNext() override;
@@ -75,6 +98,7 @@ class SqliteDatabase : public SqlDatabase {
   void createSqliteDataIndices(const BtrieveDatabase &database);
   void createSqliteTriggers(const BtrieveDatabase &database);
 
+  void initializeConnection();
   void loadSqliteMetadata(const wchar_t *filename, unsigned int openFlags);
   void loadSqliteKeys();
 
@@ -101,6 +125,9 @@ class SqliteDatabase : public SqlDatabase {
 
   BtrieveError insertAutoincrementValues(std::vector<uint8_t> &record);
 
+  const std::string &getInsertSql();
+  const std::string &getUpdateSql();
+
   BtrieveError nextReader(Query *query, CursorDirection cursorDirection);
 
   void upgradeDatabaseFromVersion(uint32_t currentVersion,
@@ -112,6 +139,10 @@ class SqliteDatabase : public SqlDatabase {
   unsigned int openFlags;
   mutable std::unordered_map<std::string, SqlitePreparedStatement>
       preparedStatements;
+  SqliteTransactionStatements transactionStatements;
+  // built on first use from keys, which don't change while the file is open
+  std::string insertSql;
+  std::string updateSql;
   std::shared_ptr<sqlite3> database;
 
   friend class SqliteQuery;

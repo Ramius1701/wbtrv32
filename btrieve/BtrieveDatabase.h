@@ -2,6 +2,7 @@
 #define __RECORD_LOADER_H_
 
 #include <functional>
+#include <map>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -39,6 +40,7 @@ class BtrieveDatabase {
   BtrieveDatabase(const BtrieveDatabase &database)
       : keys(database.keys),
         deletedRecordOffsets(database.deletedRecordOffsets),
+        v6Pages(database.v6Pages),
         pageLength(database.pageLength),
         pageCount(database.pageCount),
         recordLength(database.recordLength),
@@ -51,6 +53,7 @@ class BtrieveDatabase {
   BtrieveDatabase(BtrieveDatabase &&database)
       : keys(std::move(database.keys)),
         deletedRecordOffsets(std::move(database.deletedRecordOffsets)),
+        v6Pages(std::move(database.v6Pages)),
         pageLength(database.pageLength),
         pageCount(database.pageCount),
         recordLength(database.recordLength),
@@ -94,6 +97,10 @@ class BtrieveDatabase {
 
   // Returns the total number of records contained in this Btrieve database.
   unsigned int getRecordCount() const { return recordCount; }
+
+  // After parseDatabase: a description of anything that didn't add up during
+  // conversion (records read vs. the count in the header), or empty.
+  const std::string &getConversionWarning() const { return conversionWarning; }
 
   // Returns whether the records in this database are variable length or fixed.
   bool isVariableLengthRecords() const {
@@ -176,11 +183,24 @@ class BtrieveDatabase {
   // lookup were called for the same page.
   int32_t lookupPATEntry(FILE *f, int32_t logicalPage, uint8_t &outType);
 
+  // v6 only: maps every logical data ('D') and variable ('V') page to the
+  // physical page currently holding it, from the pages' own headers. See
+  // buildV6PageMap() for why the PAT alone isn't trusted for these.
+  void buildV6PageMap(FILE *f);
+
+  struct V6Page {
+    uint32_t physicalPage;
+    uint8_t type;
+    uint16_t usageCount;
+  };
+
   // The list of keys defined in the Btrieve database.
   std::vector<Key> keys;
   // The list of deleted record pointers inside the Btrieve database.
   // Data that exists on these record pointers will be skipped.
   std::unordered_set<uint32_t> deletedRecordOffsets;
+  // v6 logical page number -> current physical copy, ordered by logical page.
+  std::map<uint32_t, V6Page> v6Pages;
 
   // The page length of the Btrieve database. Will be a multiple of 512.
   uint16_t pageLength;
@@ -204,6 +224,9 @@ class BtrieveDatabase {
 
   // Whether the database is version 6.0. Otherwise it's 5.0
   bool v6;
+
+  // See getConversionWarning().
+  std::string conversionWarning;
 };
 
 }  // namespace btrieve

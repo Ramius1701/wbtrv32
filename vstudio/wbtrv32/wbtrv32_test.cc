@@ -1,5 +1,7 @@
 #include "wbtrv32.h"
 
+#include <atomic>
+#include <thread>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -1421,9 +1423,12 @@ TEST_F(wbtrv32Test, UpdateWithInvalidKey) {
   strcpy(record.string1, "Sysop");
   strcpy(record.string2, "stringValue");
 
+  // Real Btrieve saves the record even though key 4 doesn't exist: the key
+  // number only chooses the index to keep positioning on, and callers that
+  // pass an out-of-range one expect the update to succeed.
   ASSERT_EQ(btrcall(btrieve::OperationCode::Update, posBlock, &record,
                     &dwDataBufferLength, key, sizeof(key), 4),
-            btrieve::BtrieveError::InvalidKeyNumber);
+            btrieve::BtrieveError::Success);
 
   dwDataBufferLength = sizeof(buffer);
   ASSERT_EQ(btrcall(btrieve::OperationCode::Stat, posBlock, buffer,
@@ -1432,7 +1437,7 @@ TEST_F(wbtrv32Test, UpdateWithInvalidKey) {
 
   ASSERT_EQ(reinterpret_cast<wbtrv32::LPFILESPEC>(buffer)->recordCount, 4u);
 
-  // requery just to make sure the data wasn't updated
+  // requery to make sure the data was updated
   memset(&record, 0, sizeof(record));
 
   *reinterpret_cast<uint32_t*>(&record) = 4;
@@ -1441,7 +1446,7 @@ TEST_F(wbtrv32Test, UpdateWithInvalidKey) {
                     &record, &dwDataBufferLength, nullptr, 0, -1),
             btrieve::BtrieveError::Success);
 
-  ASSERT_EQ(record.int1, -615634567);
+  ASSERT_EQ(record.int1, -7000);
   ASSERT_EQ(record.int2, 4);
   ASSERT_STREQ(record.string1, "Sysop");
   ASSERT_STREQ(record.string2, "stringValue");
@@ -2121,6 +2126,160 @@ TEST_F(wbtrv32Test, CreateSingleKey) {
                                    0, 0, "", std::vector<char>()));
 }
 
+TEST_F(wbtrv32Test, CreateLeavesNamedFileOnDisk) {
+  unsigned char buffer[1024];
+  auto tempDir = tempPath->getTempPath();
+  std::filesystem::path datPath(tempDir);
+  datPath /= L"created.dat";
+  std::filesystem::path dbPath(tempDir);
+  dbPath /= L"created.db";
+
+  memset(buffer, 0, sizeof(buffer));
+
+  wbtrv32::LPFILESPEC lpFileSpec =
+      reinterpret_cast<wbtrv32::LPFILESPEC>(buffer);
+  lpFileSpec->pageSize = 4096;
+  lpFileSpec->numberOfKeys = 1;
+  lpFileSpec->logicalFixedRecordLength = 128;
+  lpFileSpec->fileVersion = 0x60;
+  lpFileSpec->physicalPageSize = 4096 / 512;
+  lpFileSpec->fileFlags = 0;
+
+  wbtrv32::LPKEYSPEC lpKeySpec =
+      reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
+  lpKeySpec->position = 1;
+  lpKeySpec->length = 4;
+  lpKeySpec->attributes = UseExtendedDataType;
+  lpKeySpec->extendedDataType = btrieve::KeyDataType::Integer;
+
+  const std::string fileName = toStdString(datPath);
+  const DWORD specLength =
+      static_cast<DWORD>(reinterpret_cast<unsigned char*>(lpKeySpec + 1) -
+                         buffer);
+
+  // create unless it already exists (key number -1)
+  DWORD dwDataBufferLength = specLength;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Create, nullptr, buffer,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(
+                        reinterpret_cast<LPCVOID>(fileName.c_str())),
+                    static_cast<BYTE>(fileName.size() + 1), -1),
+            btrieve::BtrieveError::Success);
+
+  // the name the caller created exists on disk, as with real Btrieve, so a
+  // caller checking for it with ordinary file APIs finds it
+  ASSERT_TRUE(FileExists(datPath.c_str()));
+  ASSERT_TRUE(FileExists(dbPath.c_str()));
+
+  dwDataBufferLength = specLength;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Create, nullptr, buffer,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(
+                        reinterpret_cast<LPCVOID>(fileName.c_str())),
+                    static_cast<BYTE>(fileName.size() + 1), -1),
+            btrieve::BtrieveError::FileAlreadyExists);
+
+  // even if the empty placeholder ends up newer than the .db (copied,
+  // touched), opening must use the .db rather than "reconvert" the
+  // placeholder and lose the data
+  std::filesystem::last_write_time(
+      datPath, std::filesystem::last_write_time(dbPath) + std::chrono::hours(1));
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(
+                        reinterpret_cast<LPCVOID>(fileName.c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+  ASSERT_TRUE(FileExists(dbPath.c_str()));
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Close, posBlock, nullptr, nullptr,
+                    nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+}
+
+// Btrieve keeps a separate position for every open handle, even on the same
+// file: moving one must not move the other.
+TEST_F(wbtrv32Test, HandlesOnTheSameFileKeepSeparatePositions) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+  const std::string fileName = toStdString(mbbsEmuDb.c_str());
+
+  uint8_t second[POSBLOCK_LENGTH];
+  memset(second, 0, sizeof(second));
+
+  for (uint8_t *handle : {posBlock, second}) {
+    ASSERT_EQ(btrcall(btrieve::OperationCode::Open, handle, nullptr, nullptr,
+                      const_cast<LPVOID>(
+                          reinterpret_cast<LPCVOID>(fileName.c_str())),
+                      -1, 0),
+              btrieve::BtrieveError::Success);
+  }
+
+  RECORD record;
+  DWORD length;
+  auto positionOf = [&](uint8_t *handle) {
+    uint32_t position = 0;
+    DWORD size = sizeof(position);
+    EXPECT_EQ(btrcall(btrieve::OperationCode::GetPosition, handle, &position,
+                      &size, nullptr, 0, 0),
+              btrieve::BtrieveError::Success);
+    return position;
+  };
+
+  for (uint8_t *handle : {posBlock, second}) {
+    length = sizeof(record);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, handle, &record,
+                      &length, nullptr, 0, -1),
+              btrieve::BtrieveError::Success);
+  }
+  const uint32_t first = positionOf(second);
+
+  // walk the first handle on two records, by key and by position
+  char key[32];
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, &record,
+                    &length, key, sizeof(key), 1),
+            btrieve::BtrieveError::Success);
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
+                    &length, key, sizeof(key), 1),
+            btrieve::BtrieveError::Success);
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepNext, posBlock, &record,
+                    &length, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+
+  // the second handle hasn't moved
+  EXPECT_EQ(positionOf(second), first);
+
+  // and stepping it goes to the record after ITS position
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepNext, second, &record,
+                    &length, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+  EXPECT_NE(positionOf(second), first);
+
+  btrcall(btrieve::OperationCode::Close, second, nullptr, nullptr, nullptr, 0,
+          0);
+}
+
+TEST_F(wbtrv32Test, Version) {
+  unsigned char buffer[16];
+  memset(buffer, 0xCC, sizeof(buffer));
+
+  DWORD dwDataBufferLength = 4;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Version, nullptr, buffer,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::DataBufferLengthOverrun);
+
+  dwDataBufferLength = sizeof(buffer);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Version, nullptr, buffer,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(dwDataBufferLength, 5u);
+  EXPECT_EQ(*reinterpret_cast<uint16_t *>(buffer), 6);
+  EXPECT_EQ(*reinterpret_cast<uint16_t *>(buffer + 2), 15);
+}
+
 TEST_F(wbtrv32Test, CreateInMemory) {
   unsigned char buffer[1024];
   uint8_t posBlock[128];
@@ -2337,4 +2496,644 @@ TEST_F(wbtrv32Test, CreateMultipleKeysWithAcs) {
             btrieve::KeyDefinition(2, 16, 30, btrieve::KeyDataType::Zstring,
                                    UseExtendedDataType | NumberedACS, false, 0,
                                    0, 0, "LOWER", acsVector));
+}
+
+// Calls may arrive from several threads at once (a host's server threads);
+// each handle must still see only its own position and the table of open
+// handles must survive.
+TEST_F(wbtrv32Test, CallsFromManyThreadsAtOnce) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+  const std::string fileName = toStdString(mbbsEmuDb.c_str());
+
+  std::atomic<int> failures{0};
+  std::string firstFailure;
+  std::vector<std::thread> threads;
+  for (int t = 0; t < 8; ++t) {
+    threads.emplace_back([&]() {
+      for (int round = 0; round < 50; ++round) {
+        uint8_t handle[POSBLOCK_LENGTH];
+        memset(handle, 0, sizeof(handle));
+        const int openStatus =
+            btrcall(btrieve::OperationCode::Open, handle, nullptr, nullptr,
+                    const_cast<LPVOID>(
+                        reinterpret_cast<LPCVOID>(fileName.c_str())),
+                    -1, 0);
+        if (openStatus != btrieve::BtrieveError::Success) {
+          if (++failures == 1) {
+            firstFailure = "open status " + std::to_string(openStatus);
+          }
+          continue;
+        }
+        RECORD record;
+        DWORD length = sizeof(record);
+        int steps = 0;
+        int status = btrcall(btrieve::OperationCode::StepFirst, handle,
+                             &record, &length, nullptr, 0, -1);
+        while (status == btrieve::BtrieveError::Success) {
+          ++steps;
+          length = sizeof(record);
+          status = btrcall(btrieve::OperationCode::StepNext, handle, &record,
+                           &length, nullptr, 0, -1);
+        }
+        // every thread walks the whole file: 4 records, then end of file
+        if (steps != 4 || status != btrieve::BtrieveError::EndOfFile) {
+          if (++failures == 1) {
+            firstFailure = "steps " + std::to_string(steps) + " status " +
+                           std::to_string(status);
+          }
+        }
+        btrcall(btrieve::OperationCode::Close, handle, nullptr, nullptr,
+                nullptr, 0, 0);
+      }
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(failures.load(), 0) << firstFailure;
+}
+
+// Worldgroup's crash recovery (and compaction utilities generally): create
+// NAME.D$$ through Btrieve, copy every record into it, then delete NAME.DAT
+// and rename NAME.D$$ to NAME.DAT with ordinary file calls. The recovered
+// records must be what NAME.DAT then holds.
+TEST_F(wbtrv32Test, CopyThenRenameOverOriginalKeepsTheCopiedData) {
+  std::filesystem::path folder(tempPath->getTempPath());
+  const std::filesystem::path original = folder / L"ORIG.DAT";
+  const std::filesystem::path temporary = folder / L"ORIG.D$$";
+
+  unsigned char spec[1024];
+  memset(spec, 0, sizeof(spec));
+  wbtrv32::LPFILESPEC lpFileSpec = reinterpret_cast<wbtrv32::LPFILESPEC>(spec);
+  lpFileSpec->pageSize = 4096;
+  lpFileSpec->numberOfKeys = 1;
+  lpFileSpec->logicalFixedRecordLength = 16;
+  lpFileSpec->fileVersion = 0x60;
+  lpFileSpec->physicalPageSize = 4096 / 512;
+  wbtrv32::LPKEYSPEC lpKeySpec =
+      reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
+  lpKeySpec->position = 1;
+  lpKeySpec->length = 4;
+  lpKeySpec->attributes = UseExtendedDataType;
+  lpKeySpec->extendedDataType = btrieve::KeyDataType::Integer;
+  const DWORD specLength = static_cast<DWORD>(
+      reinterpret_cast<unsigned char *>(lpKeySpec + 1) - spec);
+
+  auto create = [&](const std::filesystem::path &file) {
+    const std::string name = toStdString(file);
+    DWORD length = specLength;
+    return btrcall(btrieve::OperationCode::Create, nullptr, spec, &length,
+                   const_cast<LPVOID>(reinterpret_cast<LPCVOID>(name.c_str())),
+                   static_cast<BYTE>(name.size() + 1), -1);
+  };
+  auto open = [&](uint8_t *handle, const std::filesystem::path &file) {
+    const std::string name = toStdString(file);
+    memset(handle, 0, POSBLOCK_LENGTH);
+    return btrcall(btrieve::OperationCode::Open, handle, nullptr, nullptr,
+                   const_cast<LPVOID>(reinterpret_cast<LPCVOID>(name.c_str())),
+                   -1, 0);
+  };
+  auto insert = [&](uint8_t *handle, int32_t value) {
+    uint8_t record[16] = {};
+    memcpy(record, &value, sizeof(value));
+    DWORD length = sizeof(record);
+    char key[4];
+    return btrcall(btrieve::OperationCode::Insert, handle, record, &length, key,
+                   sizeof(key), 0);
+  };
+  auto count = [&](uint8_t *handle) {
+    uint8_t record[16];
+    DWORD length = sizeof(record);
+    int n = 0;
+    int status = btrcall(btrieve::OperationCode::StepFirst, handle, record,
+                         &length, nullptr, 0, -1);
+    while (status == btrieve::BtrieveError::Success) {
+      ++n;
+      length = sizeof(record);
+      status = btrcall(btrieve::OperationCode::StepNext, handle, record,
+                       &length, nullptr, 0, -1);
+    }
+    return n;
+  };
+
+  uint8_t a[POSBLOCK_LENGTH], b[POSBLOCK_LENGTH];
+  ASSERT_EQ(create(original), btrieve::BtrieveError::Success);
+  ASSERT_EQ(open(a, original), btrieve::BtrieveError::Success);
+  for (int32_t i = 1; i <= 3; ++i) {
+    ASSERT_EQ(insert(a, i), btrieve::BtrieveError::Success);
+  }
+
+  // recovery: copy every record into NAME.D$$ through Btrieve
+  ASSERT_EQ(create(temporary), btrieve::BtrieveError::Success);
+  ASSERT_EQ(open(b, temporary), btrieve::BtrieveError::Success);
+  uint8_t record[16];
+  DWORD length = sizeof(record);
+  int status = btrcall(btrieve::OperationCode::StepFirst, a, record, &length,
+                       nullptr, 0, -1);
+  while (status == btrieve::BtrieveError::Success) {
+    int32_t value;
+    memcpy(&value, record, sizeof(value));
+    ASSERT_EQ(insert(b, value * 10), btrieve::BtrieveError::Success);
+    length = sizeof(record);
+    status = btrcall(btrieve::OperationCode::StepNext, a, record, &length,
+                     nullptr, 0, -1);
+  }
+  btrcall(btrieve::OperationCode::Close, a, nullptr, nullptr, nullptr, 0, 0);
+  btrcall(btrieve::OperationCode::Close, b, nullptr, nullptr, nullptr, 0, 0);
+
+  // then the file-level swap
+  ASSERT_TRUE(std::filesystem::remove(original));
+  std::filesystem::rename(temporary, original);
+
+  ASSERT_EQ(open(a, original), btrieve::BtrieveError::Success);
+  EXPECT_EQ(count(a), 3);
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, a, record, &length,
+                    nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+  int32_t first;
+  memcpy(&first, record, sizeof(first));
+  EXPECT_EQ(first, 10);  // the recovered copy's data, not the old file's
+  btrcall(btrieve::OperationCode::Close, a, nullptr, nullptr, nullptr, 0, 0);
+  memset(posBlock, 0, sizeof(posBlock));
+}
+
+// Open modes belong to each handle. A file first opened read-only by one
+// handle must still be writable through a handle opened normally, and a
+// read-only handle must refuse writes (status 46).
+TEST_F(wbtrv32Test, OpenModesArePerHandle) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  const std::string fileName = toStdString(dat.c_str());
+  uint8_t readOnly[POSBLOCK_LENGTH], writable[POSBLOCK_LENGTH];
+  memset(readOnly, 0, sizeof(readOnly));
+  memset(writable, 0, sizeof(writable));
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, readOnly, nullptr, nullptr,
+                    const_cast<LPVOID>(
+                        reinterpret_cast<LPCVOID>(fileName.c_str())),
+                    -1, -2),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, writable, nullptr, nullptr,
+                    const_cast<LPVOID>(
+                        reinterpret_cast<LPCVOID>(fileName.c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  RECORD record;
+  DWORD length = sizeof(record);
+  char key[32];
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, writable, &record,
+                    &length, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Update, writable, &record,
+                    &length, key, sizeof(key), -1),
+            btrieve::BtrieveError::Success);
+
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, readOnly, &record,
+                    &length, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Update, readOnly, &record,
+                    &length, key, sizeof(key), -1),
+            btrieve::BtrieveError::AccessDenied);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Delete, readOnly, nullptr, nullptr,
+                    nullptr, 0, -1),
+            btrieve::BtrieveError::AccessDenied);
+
+  btrcall(btrieve::OperationCode::Close, readOnly, nullptr, nullptr, nullptr,
+          0, 0);
+  btrcall(btrieve::OperationCode::Close, writable, nullptr, nullptr, nullptr,
+          0, 0);
+  memset(posBlock, 0, sizeof(posBlock));
+}
+
+// A file opened in exclusive mode can't be opened again until it's closed,
+// and a file already open can't be opened exclusively (status 88).
+TEST_F(wbtrv32Test, ExclusiveModeExcludesOtherOpens) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  const std::string fileName = toStdString(dat.c_str());
+  auto open = [&](uint8_t *handle, int8_t mode) {
+    memset(handle, 0, POSBLOCK_LENGTH);
+    return btrcall(btrieve::OperationCode::Open, handle, nullptr, nullptr,
+                   const_cast<LPVOID>(
+                       reinterpret_cast<LPCVOID>(fileName.c_str())),
+                   -1, mode);
+  };
+  uint8_t first[POSBLOCK_LENGTH], second[POSBLOCK_LENGTH];
+
+  ASSERT_EQ(open(first, -4), btrieve::BtrieveError::Success);
+  EXPECT_EQ(open(second, 0), btrieve::BtrieveError::IncompatibleMode);
+  btrcall(btrieve::OperationCode::Close, first, nullptr, nullptr, nullptr, 0,
+          0);
+  EXPECT_EQ(open(second, 0), btrieve::BtrieveError::Success);
+  EXPECT_EQ(open(first, -4), btrieve::BtrieveError::IncompatibleMode);
+  btrcall(btrieve::OperationCode::Close, second, nullptr, nullptr, nullptr, 0,
+          0);
+  memset(posBlock, 0, sizeof(posBlock));
+}
+
+namespace {
+// Opens a fresh copy of the MBBSEMU test database under its own name.
+std::string copyOfTestDatabase(TempPath *tempPath, const wchar_t *name) {
+  auto source = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  std::filesystem::path target(source);
+  target.replace_filename(name);
+  std::filesystem::copy_file(std::filesystem::path(source), target,
+                             std::filesystem::copy_options::overwrite_existing);
+  return toStdString(target.c_str());
+}
+}  // namespace
+
+// A transaction covers every open file: End commits the changes in all of
+// them, Abort undoes them in all of them.
+TEST_F(wbtrv32Test, TransactionsCoverEveryOpenFile) {
+  const std::string first = copyOfTestDatabase(tempPath, L"TXA.DB");
+  const std::string second = copyOfTestDatabase(tempPath, L"TXB.DB");
+  uint8_t a[POSBLOCK_LENGTH], b[POSBLOCK_LENGTH];
+  memset(a, 0, sizeof(a));
+  memset(b, 0, sizeof(b));
+  for (auto [handle, name] : {std::pair{a, &first}, std::pair{b, &second}}) {
+    ASSERT_EQ(btrcall(btrieve::OperationCode::Open, handle, nullptr, nullptr,
+                      const_cast<LPVOID>(
+                          reinterpret_cast<LPCVOID>(name->c_str())),
+                      -1, 0),
+              btrieve::BtrieveError::Success);
+  }
+
+  auto countOf = [&](uint8_t *handle) {
+    char buffer[80];
+    DWORD length = sizeof(buffer);
+    btrcall(btrieve::OperationCode::Stat, handle, buffer, &length, nullptr, 0,
+            0);
+    return reinterpret_cast<wbtrv32::LPFILESPEC>(buffer)->recordCount;
+  };
+  auto insert = [&](uint8_t *handle, int32_t value) {
+    RECORD record;
+    memset(&record, 0, sizeof(record));
+    record.int1 = value;
+    record.int2 = value;
+    snprintf(record.string1, sizeof(record.string1), "tx%d", value);
+    strcpy(record.string2, "transaction");
+    DWORD length = sizeof(record);
+    return btrcall(btrieve::OperationCode::Insert, handle, &record, &length,
+                   nullptr, 0, -1);
+  };
+
+  EXPECT_EQ(btrcall(btrieve::OperationCode::EndTransaction, nullptr, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::NoTransactionActive);
+
+  // abort undoes both files
+  ASSERT_EQ(btrcall(btrieve::OperationCode::BeginTransaction, nullptr, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::BeginTransaction, nullptr, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::TransactionIsActive);
+  ASSERT_EQ(insert(a, 70001), btrieve::BtrieveError::Success);
+  ASSERT_EQ(insert(b, 70002), btrieve::BtrieveError::Success);
+  EXPECT_EQ(countOf(a), 5u);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AbortTransaction, nullptr, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(countOf(a), 4u);
+  EXPECT_EQ(countOf(b), 4u);
+
+  // end commits both files, and a failed operation inside only undoes itself
+  ASSERT_EQ(btrcall(btrieve::OperationCode::BeginConcurrentTransaction, nullptr,
+                    nullptr, nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(insert(a, 70003), btrieve::BtrieveError::Success);
+  EXPECT_NE(insert(a, 70003), btrieve::BtrieveError::Success);  // duplicate
+  ASSERT_EQ(insert(b, 70004), btrieve::BtrieveError::Success);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::EndTransaction, nullptr, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(countOf(a), 5u);
+  EXPECT_EQ(countOf(b), 5u);
+
+  btrcall(btrieve::OperationCode::Close, a, nullptr, nullptr, nullptr, 0, 0);
+  btrcall(btrieve::OperationCode::Close, b, nullptr, nullptr, nullptr, 0, 0);
+  memset(posBlock, 0, sizeof(posBlock));
+}
+
+// Set Directory changes where relative names are looked up; Get Directory
+// reports it.
+TEST_F(wbtrv32Test, SetAndGetDirectory) {
+  const std::string db = copyOfTestDatabase(tempPath, L"INDIR.DB");
+  const std::string folder =
+      toStdString(std::filesystem::path(db).parent_path().c_str());
+
+  char directory[260];
+  strcpy(directory, folder.c_str());
+  ASSERT_EQ(btrcall(btrieve::OperationCode::SetDirectory, nullptr, nullptr,
+                    nullptr, directory, sizeof(directory), 0),
+            btrieve::BtrieveError::Success);
+  char reported[260] = {};
+  ASSERT_EQ(btrcall(btrieve::OperationCode::GetDirectory, nullptr, nullptr,
+                    nullptr, reported, 255, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(std::filesystem::path(reported), std::filesystem::path(folder));
+
+  char relative[] = "INDIR.DB";
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    relative, sizeof(relative), 0),
+            btrieve::BtrieveError::Success);
+  btrcall(btrieve::OperationCode::Close, posBlock, nullptr, nullptr, nullptr, 0,
+          0);
+  memset(posBlock, 0, sizeof(posBlock));
+
+  // back to the process directory for the other tests
+  wchar_t current[MAX_PATH];
+  GetCurrentDirectoryW(MAX_PATH, current);
+  const std::string currentDirectory = toStdString(current);
+  strcpy(directory, currentDirectory.c_str());
+  btrcall(btrieve::OperationCode::SetDirectory, nullptr, nullptr, nullptr,
+          directory, sizeof(directory), 0);
+
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Unlock, nullptr, nullptr, nullptr,
+                    nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+}
+
+// Set Owner protects a file with an owner name: mode 0 needs the name to open
+// it at all, mode 1 allows read-only access without it. Clear Owner removes it.
+TEST_F(wbtrv32Test, OwnerNames) {
+  const std::string db = copyOfTestDatabase(tempPath, L"OWNED.DB");
+  auto open = [&](uint8_t *handle, const char *owner, int8_t mode = 0) {
+    memset(handle, 0, POSBLOCK_LENGTH);
+    char name[16] = {};
+    DWORD length = 0;
+    if (owner != nullptr) {
+      strcpy(name, owner);
+      length = static_cast<DWORD>(strlen(owner) + 1);
+    }
+    return btrcall(btrieve::OperationCode::Open, handle, name, &length,
+                   const_cast<LPVOID>(reinterpret_cast<LPCVOID>(db.c_str())),
+                   -1, mode);
+  };
+  auto close = [&](uint8_t *handle) {
+    btrcall(btrieve::OperationCode::Close, handle, nullptr, nullptr, nullptr, 0,
+            0);
+  };
+  auto setOwner = [&](uint8_t *handle, const char *owner, int8_t access) {
+    char name[16] = {};
+    strcpy(name, owner);
+    DWORD length = static_cast<DWORD>(strlen(owner) + 1);
+    return btrcall(btrieve::OperationCode::SetOwner, handle, name, &length,
+                   name, static_cast<BYTE>(length), access);
+  };
+
+  uint8_t handle[POSBLOCK_LENGTH];
+  ASSERT_EQ(open(handle, nullptr), btrieve::BtrieveError::Success);
+  ASSERT_EQ(setOwner(handle, "SECRET", 0), btrieve::BtrieveError::Success);
+  EXPECT_EQ(setOwner(handle, "OTHER", 0),
+            btrieve::BtrieveError::OwnerAlreadySet);
+  close(handle);
+
+  EXPECT_EQ(open(handle, nullptr), btrieve::BtrieveError::InvalidOwner);
+  EXPECT_EQ(open(handle, "WRONG"), btrieve::BtrieveError::InvalidOwner);
+  ASSERT_EQ(open(handle, "SECRET"), btrieve::BtrieveError::Success);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::ClearOwner, handle, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  close(handle);
+  ASSERT_EQ(open(handle, nullptr), btrieve::BtrieveError::Success);
+
+  // mode 1: readable without the name, but not writable
+  ASSERT_EQ(setOwner(handle, "READER", 1), btrieve::BtrieveError::Success);
+  close(handle);
+  ASSERT_EQ(open(handle, nullptr), btrieve::BtrieveError::Success);
+  RECORD record;
+  DWORD length = sizeof(record);
+  char key[32];
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, handle, &record,
+                    &length, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Update, handle, &record, &length,
+                    key, sizeof(key), -1),
+            btrieve::BtrieveError::AccessDenied);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::ClearOwner, handle, nullptr,
+                    nullptr, nullptr, 0, 0),
+            btrieve::BtrieveError::InvalidOwner);
+  close(handle);
+  memset(posBlock, 0, sizeof(posBlock));
+}
+
+namespace {
+// Builds an extended-operation descriptor.
+struct Descriptor {
+  std::vector<uint8_t> bytes;
+  void u8(uint8_t v) { bytes.push_back(v); }
+  void u16(uint16_t v) {
+    bytes.push_back(static_cast<uint8_t>(v));
+    bytes.push_back(static_cast<uint8_t>(v >> 8));
+  }
+  void raw(const void *p, size_t n) {
+    bytes.insert(bytes.end(), static_cast<const uint8_t *>(p),
+                 static_cast<const uint8_t *>(p) + n);
+  }
+  // header + filter header; terms and extractor follow
+  Descriptor(const char *start, uint16_t maxRejects, uint16_t terms) {
+    u16(0);  // length, patched by finish()
+    raw(start, 2);
+    u16(maxRejects);
+    u16(terms);
+  }
+  void term(uint8_t type, uint16_t length, uint16_t offset, uint8_t comparison,
+            uint8_t connector, const void *value) {
+    u8(type);
+    u16(length);
+    u16(offset);
+    u8(comparison);
+    u8(connector);
+    raw(value, length);
+  }
+  std::vector<uint8_t> finish(uint16_t records,
+                              std::initializer_list<std::pair<uint16_t, uint16_t>> fields,
+                              size_t bufferSize) {
+    u16(records);
+    u16(static_cast<uint16_t>(fields.size()));
+    for (auto [length, offset] : fields) {
+      u16(length);
+      u16(offset);
+    }
+    bytes[0] = static_cast<uint8_t>(bytes.size());
+    bytes[1] = static_cast<uint8_t>(bytes.size() >> 8);
+    std::vector<uint8_t> buffer(std::max(bufferSize, bytes.size()));
+    memcpy(buffer.data(), bytes.data(), bytes.size());
+    return buffer;
+  }
+};
+
+// The int1 values in an extended reply that extracted just int1.
+std::vector<int32_t> repliedInts(const std::vector<uint8_t> &reply) {
+  std::vector<int32_t> values;
+  const uint16_t count = static_cast<uint16_t>(reply[0] | reply[1] << 8);
+  size_t at = 2;
+  for (uint16_t i = 0; i < count; ++i) {
+    const uint16_t length = static_cast<uint16_t>(reply[at] | reply[at + 1] << 8);
+    int32_t value;
+    memcpy(&value, reply.data() + at + 6, sizeof(value));
+    values.push_back(value);
+    at += 6 + length;
+  }
+  return values;
+}
+}  // namespace
+
+// Step Next Extended with filters: only matching records come back, with just
+// the requested fields; AND/OR and case-insensitive comparisons work.
+TEST_F(wbtrv32Test, StepNextExtendedFilters) {
+  const std::string db = copyOfTestDatabase(tempPath, L"EXT.DB");
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(db.c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  // the records, read the ordinary way
+  std::vector<RECORD> all;
+  RECORD record;
+  DWORD length = sizeof(record);
+  int status = btrcall(btrieve::OperationCode::StepFirst, posBlock, &record,
+                       &length, nullptr, 0, -1);
+  while (status == btrieve::BtrieveError::Success) {
+    all.push_back(record);
+    length = sizeof(record);
+    status = btrcall(btrieve::OperationCode::StepNext, posBlock, &record,
+                     &length, nullptr, 0, -1);
+  }
+  ASSERT_EQ(all.size(), 4u);
+  const uint16_t int1Offset = offsetof(RECORD, int1);
+  const uint16_t string1Offset = offsetof(RECORD, string1);
+
+  auto run = [&](std::vector<uint8_t> &buffer) {
+    length = sizeof(record);
+    btrcall(btrieve::OperationCode::StepFirst, posBlock, &record, &length,
+            nullptr, 0, -1);
+    DWORD size = static_cast<DWORD>(buffer.size());
+    int result = btrcall(btrieve::OperationCode::StepNextExtended, posBlock,
+                         buffer.data(), &size, nullptr, 0, -1);
+    buffer.resize(size);
+    return result;
+  };
+
+  // int1 > 0, starting with the current (first) record
+  {
+    const int32_t zero = 0;
+    Descriptor d("UC", 0, 1);
+    d.term(1, 4, int1Offset, 2, 0, &zero);
+    auto buffer = d.finish(20, {{4, int1Offset}}, 4096);
+    EXPECT_EQ(run(buffer), btrieve::BtrieveError::EndOfFile);
+    std::vector<int32_t> expected;
+    for (const auto &r : all) {
+      if (r.int1 > 0) expected.push_back(r.int1);
+    }
+    EXPECT_EQ(repliedInts(buffer), expected);
+  }
+
+  // int1 == first's OR int1 == last's
+  {
+    Descriptor d("UC", 0, 2);
+    d.term(1, 4, int1Offset, 1, 2, &all.front().int1);
+    d.term(1, 4, int1Offset, 1, 0, &all.back().int1);
+    auto buffer = d.finish(20, {{4, int1Offset}}, 4096);
+    EXPECT_EQ(run(buffer), btrieve::BtrieveError::EndOfFile);
+    EXPECT_EQ(repliedInts(buffer),
+              (std::vector<int32_t>{all.front().int1, all.back().int1}));
+  }
+
+  // string1 equal to the first record's, upper-cased, compared without case
+  {
+    char name[32] = {};
+    for (size_t i = 0; i < sizeof(name) && all.front().string1[i]; ++i) {
+      name[i] = static_cast<char>(toupper(all.front().string1[i]));
+    }
+    Descriptor d("UC", 0, 1);
+    d.term(11, 32, string1Offset, 1 + 128, 0, name);
+    auto buffer = d.finish(1, {{4, int1Offset}}, 4096);
+    EXPECT_EQ(run(buffer), btrieve::BtrieveError::Success);  // got the 1 wanted
+    ASSERT_EQ(repliedInts(buffer).size(), 1u);
+    EXPECT_EQ(repliedInts(buffer)[0], all.front().int1);
+  }
+
+  // a broken descriptor
+  {
+    std::vector<uint8_t> buffer = {10, 0, 'X', 'X', 0, 0, 0, 0, 1, 0};
+    buffer.resize(64);
+    EXPECT_EQ(run(buffer), btrieve::BtrieveError::IncorrectDescriptor);
+  }
+
+  // Insert Extended: two records in one call
+  {
+    std::vector<uint8_t> buffer = {2, 0};
+    for (int32_t value : {880001, 880002}) {
+      RECORD added = all.front();
+      added.int1 = value;
+      added.int2 = value;
+      snprintf(added.string1, sizeof(added.string1), "ext%d", value);
+      buffer.push_back(sizeof(added));
+      buffer.push_back(0);
+      const uint8_t *p = reinterpret_cast<const uint8_t *>(&added);
+      buffer.insert(buffer.end(), p, p + sizeof(added));
+    }
+    DWORD size = static_cast<DWORD>(buffer.size());
+    ASSERT_EQ(btrcall(btrieve::OperationCode::InsertExtended, posBlock,
+                      buffer.data(), &size, nullptr, 0, -1),
+              btrieve::BtrieveError::Success);
+    EXPECT_EQ(buffer[0], 2);
+    char stat[80];
+    DWORD statLength = sizeof(stat);
+    btrcall(btrieve::OperationCode::Stat, posBlock, stat, &statLength, nullptr,
+            0, 0);
+    EXPECT_EQ(reinterpret_cast<wbtrv32::LPFILESPEC>(stat)->recordCount, 6u);
+  }
+
+  btrcall(btrieve::OperationCode::Close, posBlock, nullptr, nullptr, nullptr, 0,
+          0);
+  memset(posBlock, 0, sizeof(posBlock));
+}
+
+// Get Next Extended walks a key path: after Get First on key 1, it returns
+// the remaining records in that key's order.
+TEST_F(wbtrv32Test, GetNextExtendedFollowsTheKeyPath) {
+  const std::string db = copyOfTestDatabase(tempPath, L"EXTKEY.DB");
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(db.c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  // key 1 order, read the ordinary way
+  std::vector<int32_t> keyOrder;
+  RECORD record;
+  DWORD length = sizeof(record);
+  char key[64];
+  int status = btrcall(btrieve::OperationCode::AcquireFirst, posBlock, &record,
+                       &length, key, sizeof(key), 1);
+  while (status == btrieve::BtrieveError::Success) {
+    keyOrder.push_back(record.int1);
+    length = sizeof(record);
+    status = btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
+                     &length, key, sizeof(key), 1);
+  }
+  ASSERT_EQ(keyOrder.size(), 4u);
+
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, &record,
+                    &length, key, sizeof(key), 1),
+            btrieve::BtrieveError::Success);
+  Descriptor d("EG", 0, 0);  // no filter: every record
+  auto buffer = d.finish(10, {{4, static_cast<uint16_t>(offsetof(RECORD, int1))}}, 4096);
+  DWORD size = static_cast<DWORD>(buffer.size());
+  EXPECT_EQ(btrcall(btrieve::OperationCode::GetNextExtended, posBlock,
+                    buffer.data(), &size, key, sizeof(key), 1),
+            btrieve::BtrieveError::EndOfFile);
+  buffer.resize(size);
+  EXPECT_EQ(repliedInts(buffer),
+            std::vector<int32_t>(keyOrder.begin() + 1, keyOrder.end()));
+
+  btrcall(btrieve::OperationCode::Close, posBlock, nullptr, nullptr, nullptr, 0,
+          0);
+  memset(posBlock, 0, sizeof(posBlock));
 }

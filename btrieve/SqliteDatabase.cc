@@ -118,6 +118,7 @@ BtrieveError SqliteDatabase::open(const wchar_t *filename, OpenMode openMode) {
 
   this->database = std::shared_ptr<sqlite3>(db, &sqlite3_close);
 
+  initializeConnection();
   loadSqliteMetadata(filename, openFlags);
   loadSqliteKeys();
 
@@ -131,6 +132,34 @@ BtrieveError SqliteDatabase::open(const wchar_t *filename, OpenMode openMode) {
   }
 
   return BtrieveError::Success;
+}
+
+// Prepares a freshly opened connection: drops per-connection caches left from
+// any previous connection, then applies the performance pragmas.
+//
+// Every Btrieve Insert/Update/Delete is its own transaction, so the default
+// rollback journal with synchronous=FULL costs an fsync (~10ms) per operation.
+// WAL with synchronous=NORMAL remains durable across application crashes and
+// only risks the most recent commits on OS crash/power loss. The larger page
+// cache (32 MiB, the default is 2 MiB) keeps random key lookups out of the OS.
+// Checkpoints are the only fsyncs left under synchronous=NORMAL, so let the
+// WAL grow to ~40 MiB (10000 pages, the default is 1000) between them.
+void SqliteDatabase::initializeConnection() {
+  transactionStatements.clear();
+  insertSql.clear();
+  updateSql.clear();
+
+  const char *const pragmas =
+      "PRAGMA journal_mode = WAL;"
+      "PRAGMA synchronous = NORMAL;"
+      "PRAGMA cache_size = -32768;"
+      "PRAGMA wal_autocheckpoint = 10000;";
+
+  int errorCode =
+      sqlite3_exec(database.get(), pragmas, nullptr, nullptr, nullptr);
+  if (errorCode != SQLITE_OK) {
+    throwException(errorCode);
+  }
 }
 
 void SqliteDatabase::loadSqliteMetadata(const wchar_t *filename,
@@ -295,6 +324,9 @@ std::unique_ptr<RecordLoader> SqliteDatabase::create(
   // remove the file if is exists since we're creating it anew
   if (fileName != nullptr) {
     unlink(toStdString(fileName).c_str());
+    // and the old database's journal files, which belong to it, not the new one
+    unlink((toStdString(fileName) + "-wal").c_str());
+    unlink((toStdString(fileName) + "-shm").c_str());
     flags |= SQLITE_OPEN_CREATE;
   } else {
     flags |= SQLITE_OPEN_MEMORY;
@@ -308,6 +340,8 @@ std::unique_ptr<RecordLoader> SqliteDatabase::create(
   }
 
   this->database = std::shared_ptr<sqlite3>(db, &sqlite3_close);
+
+  initializeConnection();
 
   recordLength = database.getRecordLength();
   variableLengthRecords = database.isVariableLengthRecords();
@@ -460,11 +494,231 @@ void SqliteDatabase::createSqliteTriggers(const BtrieveDatabase &database) {
 }
 
 // Closes an opened database.
+// The source fingerprint lives in its own table rather than metadata_t, so
+// databases converted before it existed need no schema migration: they just
+// don't have the table yet.
+bool SqliteDatabase::readSourceFingerprint(SourceFingerprint &fingerprint) {
+  sqlite3_stmt *statement = nullptr;
+  if (!database ||
+      sqlite3_prepare_v2(database.get(),
+                         "SELECT size, mtime, hash FROM dat_source_t LIMIT 1",
+                         -1, &statement, nullptr) != SQLITE_OK) {
+    sqlite3_finalize(statement);
+    return false;
+  }
+
+  const bool found = sqlite3_step(statement) == SQLITE_ROW;
+  if (found) {
+    fingerprint.size = static_cast<uint64_t>(sqlite3_column_int64(statement, 0));
+    fingerprint.modificationTime = sqlite3_column_int64(statement, 1);
+    fingerprint.hash = static_cast<uint64_t>(sqlite3_column_int64(statement, 2));
+  }
+  sqlite3_finalize(statement);
+  return found;
+}
+
+bool SqliteDatabase::writeSourceFingerprint(
+    const SourceFingerprint &fingerprint) {
+  if (!database) {
+    return false;
+  }
+
+  char sql[512];
+  snprintf(sql, sizeof(sql),
+           "BEGIN IMMEDIATE;"
+           "CREATE TABLE IF NOT EXISTS dat_source_t(size INTEGER NOT NULL, "
+           "mtime INTEGER NOT NULL, hash INTEGER NOT NULL);"
+           "DELETE FROM dat_source_t;"
+           "INSERT INTO dat_source_t(size, mtime, hash) VALUES(%lld, %lld, "
+           "%lld);"
+           "COMMIT;",
+           static_cast<long long>(fingerprint.size),
+           static_cast<long long>(fingerprint.modificationTime),
+           static_cast<long long>(fingerprint.hash));
+
+  if (sqlite3_exec(database.get(), sql, nullptr, nullptr, nullptr) !=
+      SQLITE_OK) {
+    // e.g. a read-only (query_only) connection; nothing to record now
+    sqlite3_exec(database.get(), "ROLLBACK;", nullptr, nullptr, nullptr);
+    return false;
+  }
+  return true;
+}
+
+namespace {
+// A short-lived connection used for identity and copies, independent of the
+// mode the main connection was opened in.
+struct ScopedConnection {
+  sqlite3 *db = nullptr;
+  ScopedConnection(const std::filesystem::path &path, int flags) {
+    if (sqlite3_open_v2(toStdString(path).c_str(), &db, flags, nullptr) !=
+        SQLITE_OK) {
+      sqlite3_close(db);
+      db = nullptr;
+    } else {
+      sqlite3_busy_timeout(db, 5000);
+    }
+  }
+  ~ScopedConnection() { sqlite3_close(db); }
+};
+}  // namespace
+
+bool SqliteDatabase::readIdentity(const std::filesystem::path &database,
+                                  DatabaseIdentity &identity) {
+  ScopedConnection connection(database, SQLITE_OPEN_READONLY);
+  if (connection.db == nullptr) {
+    return false;
+  }
+  sqlite3_stmt *statement = nullptr;
+  bool found = false;
+  if (sqlite3_prepare_v2(connection.db,
+                         "SELECT id, source FROM db_identity_t LIMIT 1", -1,
+                         &statement, nullptr) == SQLITE_OK &&
+      sqlite3_step(statement) == SQLITE_ROW) {
+    const unsigned char *id = sqlite3_column_text(statement, 0);
+    const unsigned char *source = sqlite3_column_text(statement, 1);
+    identity.id = id ? reinterpret_cast<const char *>(id) : "";
+    identity.source = source ? reinterpret_cast<const char *>(source) : "";
+    found = !identity.id.empty();
+  }
+  sqlite3_finalize(statement);
+  return found;
+}
+
+bool SqliteDatabase::writeIdentity(const std::filesystem::path &database,
+                                   const DatabaseIdentity &identity) {
+  ScopedConnection connection(database, SQLITE_OPEN_READWRITE);
+  if (connection.db == nullptr ||
+      sqlite3_exec(connection.db,
+                   "BEGIN IMMEDIATE;"
+                   "CREATE TABLE IF NOT EXISTS db_identity_t(id TEXT NOT NULL, "
+                   "source TEXT NOT NULL);"
+                   "DELETE FROM db_identity_t;",
+                   nullptr, nullptr, nullptr) != SQLITE_OK) {
+    if (connection.db != nullptr) {
+      sqlite3_exec(connection.db, "ROLLBACK;", nullptr, nullptr, nullptr);
+    }
+    return false;
+  }
+
+  sqlite3_stmt *statement = nullptr;
+  bool ok = sqlite3_prepare_v2(
+                connection.db,
+                "INSERT INTO db_identity_t(id, source) VALUES(?, ?)", -1,
+                &statement, nullptr) == SQLITE_OK &&
+            sqlite3_bind_text(statement, 1, identity.id.c_str(), -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+            sqlite3_bind_text(statement, 2, identity.source.c_str(), -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+            sqlite3_step(statement) == SQLITE_DONE;
+  sqlite3_finalize(statement);
+
+  ok = ok && sqlite3_exec(connection.db, "COMMIT;", nullptr, nullptr,
+                          nullptr) == SQLITE_OK;
+  if (!ok) {
+    sqlite3_exec(connection.db, "ROLLBACK;", nullptr, nullptr, nullptr);
+  }
+  return ok;
+}
+
+bool SqliteDatabase::readOwner(const std::filesystem::path &database,
+                               OwnerInfo &owner) {
+  ScopedConnection connection(database, SQLITE_OPEN_READONLY);
+  if (connection.db == nullptr) {
+    return false;
+  }
+  sqlite3_stmt *statement = nullptr;
+  bool found = false;
+  if (sqlite3_prepare_v2(connection.db,
+                         "SELECT name, mode FROM owner_t LIMIT 1", -1,
+                         &statement, nullptr) == SQLITE_OK &&
+      sqlite3_step(statement) == SQLITE_ROW) {
+    const unsigned char *name = sqlite3_column_text(statement, 0);
+    owner.name = name ? reinterpret_cast<const char *>(name) : "";
+    owner.mode = sqlite3_column_int(statement, 1);
+    found = true;
+  }
+  sqlite3_finalize(statement);
+  return found;
+}
+
+bool SqliteDatabase::writeOwner(const std::filesystem::path &database,
+                                const OwnerInfo *owner) {
+  ScopedConnection connection(database, SQLITE_OPEN_READWRITE);
+  if (connection.db == nullptr ||
+      sqlite3_exec(connection.db,
+                   "CREATE TABLE IF NOT EXISTS owner_t(name TEXT NOT NULL, "
+                   "mode INTEGER NOT NULL);"
+                   "DELETE FROM owner_t;",
+                   nullptr, nullptr, nullptr) != SQLITE_OK) {
+    return false;
+  }
+  if (owner == nullptr) {
+    return true;
+  }
+  sqlite3_stmt *statement = nullptr;
+  const bool ok =
+      sqlite3_prepare_v2(connection.db,
+                         "INSERT INTO owner_t(name, mode) VALUES(?, ?)", -1,
+                         &statement, nullptr) == SQLITE_OK &&
+      sqlite3_bind_text(statement, 1, owner->name.c_str(), -1,
+                        SQLITE_TRANSIENT) == SQLITE_OK &&
+      sqlite3_bind_int(statement, 2, owner->mode) == SQLITE_OK &&
+      sqlite3_step(statement) == SQLITE_DONE;
+  sqlite3_finalize(statement);
+  return ok;
+}
+
+bool SqliteDatabase::beginUserTransaction() {
+  return database && sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr,
+                                  nullptr, nullptr) == SQLITE_OK;
+}
+
+bool SqliteDatabase::endUserTransaction() {
+  return database && sqlite3_exec(database.get(), "COMMIT", nullptr, nullptr,
+                                  nullptr) == SQLITE_OK;
+}
+
+bool SqliteDatabase::abortUserTransaction() {
+  // records read inside the transaction may be cached; they're gone now
+  cache.clear();
+  return database && sqlite3_exec(database.get(), "ROLLBACK", nullptr, nullptr,
+                                  nullptr) == SQLITE_OK;
+}
+
+bool SqliteDatabase::copyDatabase(const std::filesystem::path &from,
+                                  const std::filesystem::path &to) {
+  ScopedConnection source(from, SQLITE_OPEN_READONLY);
+  ScopedConnection destination(to, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+  if (source.db == nullptr || destination.db == nullptr) {
+    return false;
+  }
+  sqlite3_backup *backup =
+      sqlite3_backup_init(destination.db, "main", source.db, "main");
+  if (backup == nullptr) {
+    return false;
+  }
+  int result;
+  int busyRetries = 100;  // ~5 seconds, then give up rather than hang
+  do {
+    result = sqlite3_backup_step(backup, -1);
+    if (result == SQLITE_BUSY || result == SQLITE_LOCKED) {
+      sqlite3_sleep(50);
+    }
+  } while (result == SQLITE_OK ||
+           ((result == SQLITE_BUSY || result == SQLITE_LOCKED) &&
+            --busyRetries > 0));
+  return sqlite3_backup_finish(backup) == SQLITE_OK && result == SQLITE_DONE;
+}
+
 void SqliteDatabase::close() {
   preparedStatements.clear();
+  transactionStatements.clear();
   database.reset();
 
   keys.clear();
+  insertSql.clear();
+  updateSql.clear();
   cache.clear();
 }
 
@@ -638,7 +892,7 @@ std::pair<BtrieveError, unsigned int> SqliteDatabase::insertRecord(
     record = std::basic_string_view<uint8_t>(data.data(), recordLength);
   }
 
-  SqliteTransaction transaction(database);
+  SqliteTransaction transaction(database, &transactionStatements);
 
   error = insertAutoincrementValues(data);
   if (error != BtrieveError::Success) {
@@ -651,23 +905,8 @@ std::pair<BtrieveError, unsigned int> SqliteDatabase::insertRecord(
   // (unincremented) placeholder value rather than the one we just computed.
   record = std::basic_string_view<uint8_t>(data.data(), data.size());
 
-  std::string insertSql;
-  if (!keys.empty()) {
-    std::stringstream sb;
-    sb << "INSERT INTO data_t(data, ";
-    sb << commaDelimited(keys.begin(), keys.end(),
-                         [](const Key &key) { return key.getSqliteKeyName(); });
-    sb << ") VALUES(@data, ";
-    sb << commaDelimited(keys.begin(), keys.end(), [](const Key &key) {
-      return "@" + key.getSqliteKeyName();
-    });
-    sb << ");";
-    insertSql = sb.str();
-  } else {
-    insertSql = "INSERT INTO data_t(data) VALUES (@data)";
-  }
-
-  SqlitePreparedStatement &insertCmd = getPreparedStatement(insertSql.c_str());
+  SqlitePreparedStatement &insertCmd =
+      getPreparedStatement(getInsertSql().c_str());
   insertCmd.bindParameter(1, BindableValue(record));
 
   unsigned int parameterNumber = 2;
@@ -784,29 +1023,33 @@ BtrieveError SqliteDatabase::insertAutoincrementValues(
   return BtrieveError::Success;
 }
 
-BtrieveError SqliteDatabase::updateRecord(
-    unsigned int id, std::basic_string_view<uint8_t> record) {
-  std::vector<uint8_t> data(record.size());
-  memcpy(data.data(), record.data(), record.size());
-  BtrieveError error;
-
-  if (!variableLengthRecords && record.size() != recordLength) {
-    //_logger.Warn(
-    //    $"Btrieve Record Size Mismatch TRUNCATING. Expected Length
-    //    {RecordLength}, Actual Length {record.Length}");
-    data.resize(recordLength, 0);
-    record = std::basic_string_view<uint8_t>(data.data(), recordLength);
+const std::string &SqliteDatabase::getInsertSql() {
+  if (!insertSql.empty()) {
+    return insertSql;
   }
 
-  SqliteTransaction transaction(database);
+  if (!keys.empty()) {
+    std::stringstream sb;
+    sb << "INSERT INTO data_t(data, ";
+    sb << commaDelimited(keys.begin(), keys.end(),
+                         [](const Key &key) { return key.getSqliteKeyName(); });
+    sb << ") VALUES(@data, ";
+    sb << commaDelimited(keys.begin(), keys.end(), [](const Key &key) {
+      return "@" + key.getSqliteKeyName();
+    });
+    sb << ");";
+    insertSql = sb.str();
+  } else {
+    insertSql = "INSERT INTO data_t(data) VALUES (@data)";
+  }
+  return insertSql;
+}
 
-  error = insertAutoincrementValues(data);
-  if (error != BtrieveError::Success) {
-    transaction.rollback();
-    return error;
+const std::string &SqliteDatabase::getUpdateSql() {
+  if (!updateSql.empty()) {
+    return updateSql;
   }
 
-  std::string updateSql;
   if (!keys.empty()) {
     std::stringstream sb;
     sb << "UPDATE data_t SET data=@data, ";
@@ -823,8 +1066,33 @@ BtrieveError SqliteDatabase::updateRecord(
   } else {
     updateSql = "UPDATE data_t SET data=@data WHERE id=@id";
   }
+  return updateSql;
+}
 
-  SqlitePreparedStatement &updateCmd = getPreparedStatement(updateSql.c_str());
+BtrieveError SqliteDatabase::updateRecord(
+    unsigned int id, std::basic_string_view<uint8_t> record) {
+  std::vector<uint8_t> data(record.size());
+  memcpy(data.data(), record.data(), record.size());
+  BtrieveError error;
+
+  if (!variableLengthRecords && record.size() != recordLength) {
+    //_logger.Warn(
+    //    $"Btrieve Record Size Mismatch TRUNCATING. Expected Length
+    //    {RecordLength}, Actual Length {record.Length}");
+    data.resize(recordLength, 0);
+    record = std::basic_string_view<uint8_t>(data.data(), recordLength);
+  }
+
+  SqliteTransaction transaction(database, &transactionStatements);
+
+  error = insertAutoincrementValues(data);
+  if (error != BtrieveError::Success) {
+    transaction.rollback();
+    return error;
+  }
+
+  SqlitePreparedStatement &updateCmd =
+      getPreparedStatement(getUpdateSql().c_str());
   updateCmd.bindParameter(1, BindableValue(record));
 
   unsigned int parameterNumber = 2;

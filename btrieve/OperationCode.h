@@ -56,9 +56,20 @@ enum OperationCode {
   // Information Operations
   Stat = 0xF,
   Extend = 0x10,
+  SetDirectory = 0x11,
+  GetDirectory = 0x12,
+  BeginTransaction = 0x13,
+  EndTransaction = 0x14,
+  AbortTransaction = 0x15,
+  // Begin Transaction with the concurrent bias (+1000)
+  BeginConcurrentTransaction = 0x13 + 1000,
   GetPosition = 0x16,
   WITH_RECORD_LOCK(GetDirectChunkOrRecord, 0x17),
+  Version = 0x1A,
+  Unlock = 0x1B,
+  Reset = 0x1C,
   SetOwner = 0x1D,
+  ClearOwner = 0x1E,
 
   // Step Operations, operates on physical offset not keys
   //[AcquiresData]
@@ -73,6 +84,8 @@ enum OperationCode {
 
   //[AcquiresData]
   //[UsesPreviousQuery]
+  WITH_RECORD_LOCK(GetNextExtended, 0x24),
+  WITH_RECORD_LOCK(GetPreviousExtended, 0x25),
   WITH_RECORD_LOCK(StepNextExtended, 0x26),
 
   //[AcquiresData]
@@ -82,6 +95,7 @@ enum OperationCode {
   //[AcquiresData]
   //[UsesPreviousQuery]
   WITH_RECORD_LOCK(StepPreviousExtended, 0x27),
+  InsertExtended = 0x28,
 
   // Query Operations
   //[QueryOnly]
