@@ -109,11 +109,6 @@ const char* toString(OperationCode operationCode) {
     HANDLE_OPERATION_CODE(Version);
     HANDLE_OPERATION_CODE(SetDirectory);
     HANDLE_OPERATION_CODE(GetDirectory);
-    HANDLE_OPERATION_CODE(BeginTransaction);
-    HANDLE_OPERATION_CODE(EndTransaction);
-    HANDLE_OPERATION_CODE(AbortTransaction);
-    HANDLE_OPERATION_CODE(BeginConcurrentTransaction);
-    HANDLE_OPERATION_CODE(Unlock);
     HANDLE_OPERATION_CODE(Reset);
     HANDLE_OPERATION_CODE(ClearOwner);
     HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(GetNextExtended);
@@ -135,7 +130,13 @@ const char* toString(OperationCode operationCode) {
     HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(QueryLessOrEqual);
     HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(QueryFirst);
     HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(QueryLast);
+    HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(BeginTransaction);
+    HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(BeginConcurrentTransaction);
+    HANDLE_OPERATION_CODE_WITH_RECORD_LOCK(BeginConcurrentNoWaitTransaction);
+    HANDLE_OPERATION_CODE(EndTransaction);
+    HANDLE_OPERATION_CODE(AbortTransaction);
     HANDLE_OPERATION_CODE(Stop);
+    HANDLE_OPERATION_CODE(Unlock);
     HANDLE_OPERATION_CODE(None);
     default:
       static char buf[16];

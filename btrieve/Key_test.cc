@@ -49,13 +49,15 @@ TEST_P(ParameterizedFixture, IntegerTypeConversions) {
   Key key(&keyDefinition, 1);
 
   auto actual = static_cast<uint64_t>(
-      key.keyDataToSqliteObject(
-             std::basic_string_view<uint8_t>(view.data, view.length))
+      key.keyDataToSqliteObjects(
+             std::basic_string_view<uint8_t>(view.data, view.length))[0]
           .getIntegerValue());
 
   EXPECT_EQ(actual, view.expected);
 }
 
+// 8 byte unsigned values have their top bit flipped, so they sort as unsigned
+// in SQLite's signed INTEGER.
 static std::vector<ParameterizedFixtureType> create() {
   return std::vector<ParameterizedFixtureType>{
       {DATA_NEGATIVE, 2, KeyDataType::Integer, static_cast<uint64_t>(-3343)},
@@ -75,15 +77,15 @@ static std::vector<ParameterizedFixtureType> create() {
       {DATA_NEGATIVE, 2, KeyDataType::Unsigned, 0xF2F1},
       {DATA_NEGATIVE, 4, KeyDataType::Unsigned, 0xF4F3F2F1},
       {DATA_NEGATIVE, 6, KeyDataType::Unsigned, 0xF6F5F4F3F2F1},
-      {DATA_NEGATIVE, 8, KeyDataType::Unsigned, 0xF8F7F6F5F4F3F2F1},
+      {DATA_NEGATIVE, 8, KeyDataType::Unsigned, 0x78F7F6F5F4F3F2F1},
       {DATA_NEGATIVE, 2, KeyDataType::UnsignedBinary, 0xF2F1},
       {DATA_NEGATIVE, 4, KeyDataType::UnsignedBinary, 0xF4F3F2F1},
       {DATA_NEGATIVE, 6, KeyDataType::UnsignedBinary, 0xF6F5F4F3F2F1},
-      {DATA_NEGATIVE, 8, KeyDataType::UnsignedBinary, 0xF8F7F6F5F4F3F2F1},
+      {DATA_NEGATIVE, 8, KeyDataType::UnsignedBinary, 0x78F7F6F5F4F3F2F1},
       {DATA_NEGATIVE, 2, KeyDataType::OldBinary, 0xF2F1},
       {DATA_NEGATIVE, 4, KeyDataType::OldBinary, 0xF4F3F2F1},
       {DATA_NEGATIVE, 6, KeyDataType::OldBinary, 0xF6F5F4F3F2F1},
-      {DATA_NEGATIVE, 8, KeyDataType::OldBinary, 0xF8F7F6F5F4F3F2F1},
+      {DATA_NEGATIVE, 8, KeyDataType::OldBinary, 0x78F7F6F5F4F3F2F1},
       {DATA_POSITIVE, 2, KeyDataType::Integer, 0x201},
       {DATA_POSITIVE, 4, KeyDataType::Integer, 0x4030201},
       {DATA_POSITIVE, 6, KeyDataType::Integer, 0x60504030201},
@@ -95,15 +97,15 @@ static std::vector<ParameterizedFixtureType> create() {
       {DATA_POSITIVE, 2, KeyDataType::UnsignedBinary, 0x201},
       {DATA_POSITIVE, 4, KeyDataType::UnsignedBinary, 0x4030201},
       {DATA_POSITIVE, 6, KeyDataType::UnsignedBinary, 0x60504030201},
-      {DATA_POSITIVE, 8, KeyDataType::UnsignedBinary, 0x807060504030201},
+      {DATA_POSITIVE, 8, KeyDataType::UnsignedBinary, 0x8807060504030201},
       {DATA_POSITIVE, 2, KeyDataType::Unsigned, 0x201},
       {DATA_POSITIVE, 4, KeyDataType::Unsigned, 0x4030201},
       {DATA_POSITIVE, 6, KeyDataType::Unsigned, 0x60504030201},
-      {DATA_POSITIVE, 8, KeyDataType::Unsigned, 0x807060504030201},
+      {DATA_POSITIVE, 8, KeyDataType::Unsigned, 0x8807060504030201},
       {DATA_POSITIVE, 2, KeyDataType::OldBinary, 0x201},
       {DATA_POSITIVE, 4, KeyDataType::OldBinary, 0x4030201},
       {DATA_POSITIVE, 6, KeyDataType::OldBinary, 0x60504030201},
-      {DATA_POSITIVE, 8, KeyDataType::OldBinary, 0x807060504030201}};
+      {DATA_POSITIVE, 8, KeyDataType::OldBinary, 0x8807060504030201}};
 }
 
 INSTANTIATE_TEST_CASE_P(Key, ParameterizedFixture,
@@ -126,11 +128,10 @@ TEST_P(ParameterizedStringFixture, StringTypeConversions) {
 
   Key key(&keyDefinition, 1);
 
-  auto actual = key
-                    .keyDataToSqliteObject(std::basic_string_view<uint8_t>(
-                        reinterpret_cast<const uint8_t *>(STRING_DATA) +
-                            (view.type == KeyDataType::Lstring ? 0 : 1),
-                        view.length))
+  auto actual = key.keyDataToSqliteObjects(std::basic_string_view<uint8_t>(
+      reinterpret_cast<const uint8_t *>(STRING_DATA) +
+          (view.type == KeyDataType::Lstring ? 0 : 1),
+      view.length))[0]
                     .getStringValue();
 
   EXPECT_EQ(actual, view.expected);
@@ -166,7 +167,7 @@ TEST(Key, SegmentIndices) {
   EXPECT_EQ(key.getSegments()[1].getSegmentIndex(), 1);
 }
 
-TEST(Key, CompositeKeyConcatentation) {
+TEST(Key, CompositeKeySegmentValues) {
   KeyDefinition keyDefinitions[2] = {
       KeyDefinition(0, 8, 2, KeyDataType::Integer, UseExtendedDataType, true, 0,
                     0, 0, "", std::vector<char>()),
@@ -182,15 +183,344 @@ TEST(Key, CompositeKeyConcatentation) {
 
   Key key(keyDefinitions, 2);
 
-  auto actual = key.extractKeyInRecordToSqliteObject(
+  auto actual = key.extractKeyInRecordToSqliteObjects(
+      std::basic_string_view<uint8_t>(record, sizeof(record)));
+
+  ASSERT_EQ(actual.size(), 2u);
+  EXPECT_EQ(actual[0].getIntegerValue(), 0x0505050505050505);
+  EXPECT_EQ(actual[1].getStringValue(), "TTTT");
+}
+
+TEST(Key, CompositeKeyColumns) {
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(3, 2, 0, KeyDataType::Integer, UseExtendedDataType, true, 0,
+                    0, 0, "", std::vector<char>()),
+      KeyDefinition(3, 8, 2, KeyDataType::Zstring, UseExtendedDataType, false,
+                    1, 0, 0, "", std::vector<char>())};
+
+  Key key(keyDefinitions, 2);
+
+  EXPECT_EQ(key.getSqliteColumnNames(),
+            std::vector<std::string>({"key_3_0", "key_3_1"}));
+  // uniqueness is enforced by the composite index, not per column
+  EXPECT_EQ(key.getSqliteColumnDefinitions(),
+            std::vector<std::string>(
+                {"key_3_0 INTEGER NOT NULL", "key_3_1 TEXT NOT NULL"}));
+}
+
+TEST(Key, CompositeKeyTruncatedKeyDataIsZeroPadded) {
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer, UseExtendedDataType, true, 0,
+                    0, 0, "", std::vector<char>()),
+      KeyDefinition(0, 4, 2, KeyDataType::Integer, UseExtendedDataType, false,
+                    1, 0, 0, "", std::vector<char>())};
+
+  Key key(keyDefinitions, 2);
+
+  uint8_t keyData[] = {0x01, 0x02, 0x03};
+  auto actual = key.keyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+
+  ASSERT_EQ(actual.size(), 2u);
+  EXPECT_EQ(actual[0].getIntegerValue(), 0x0201);
+  EXPECT_EQ(actual[1].getIntegerValue(), 0x03);
+}
+
+// A search key can end partway through an integer segment. A signed
+// segment's missing high bytes extend the sign of the last byte supplied, an
+// unsigned segment's are zero, and a segment with no bytes supplied is zero.
+struct TruncatedIntegerFixtureType {
+  KeyDataType type;
+  uint16_t length;
+  std::vector<uint8_t> keyData;
+  int64_t expected;
+};
+
+class TruncatedIntegerFixture
+    : public testing::TestWithParam<TruncatedIntegerFixtureType> {};
+
+TEST_P(TruncatedIntegerFixture, SingleKey) {
+  const TruncatedIntegerFixtureType &view = GetParam();
+
+  KeyDefinition keyDefinition(0, view.length, 0, view.type,
+                              UseExtendedDataType, false, 0, 0, 0, "",
+                              std::vector<char>());
+  Key key(&keyDefinition, 1);
+
+  auto actual = key.searchKeyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(view.keyData.data(),
+                                      view.keyData.size()));
+  ASSERT_EQ(actual.size(), 1u);
+  EXPECT_EQ(actual[0].getIntegerValue(), view.expected);
+}
+
+// The same segment after a 2 byte INTEGER segment, which is supplied in full.
+TEST_P(TruncatedIntegerFixture, CompositeKey) {
+  const TruncatedIntegerFixtureType &view = GetParam();
+
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer, UseExtendedDataType, true,
+                    0, 0, 0, "", std::vector<char>()),
+      KeyDefinition(0, view.length, 2, view.type, UseExtendedDataType, false,
+                    0, 1, 0, "", std::vector<char>())};
+  Key key(keyDefinitions, 2);
+
+  std::vector<uint8_t> keyData = {0xFE, 0xFF};
+  keyData.insert(keyData.end(), view.keyData.begin(), view.keyData.end());
+
+  auto actual = key.searchKeyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData.data(), keyData.size()));
+  ASSERT_EQ(actual.size(), 2u);
+  EXPECT_EQ(actual[0].getIntegerValue(), -2);
+  EXPECT_EQ(actual[1].getIntegerValue(), view.expected);
+}
+
+INSTANTIATE_TEST_CASE_P(
+    Key, TruncatedIntegerFixture,
+    ::testing::ValuesIn(std::vector<TruncatedIntegerFixtureType>{
+        {KeyDataType::Integer, 2, {}, 0},
+        {KeyDataType::Integer, 2, {0xFF}, -1},
+        {KeyDataType::Integer, 2, {0x80}, -128},
+        {KeyDataType::Integer, 2, {0x7F}, 127},
+        {KeyDataType::Integer, 2, {0xFF, 0x7F}, 0x7FFF},
+        {KeyDataType::Integer, 2, {0x00, 0x80}, -32768},
+        {KeyDataType::Integer, 4, {0x00, 0x80}, -32768},
+        {KeyDataType::Integer, 4, {0x01, 0x02, 0x03}, 0x030201},
+        {KeyDataType::Integer, 8, {0xFE, 0xFF, 0xFF}, -2},
+        {KeyDataType::AutoInc, 4, {0xFF}, -1},
+        {KeyDataType::Unsigned, 2, {0xFF}, 0xFF},
+        {KeyDataType::UnsignedBinary, 4, {0x00, 0x80}, 0x8000},
+    }));
+
+struct CompositeNullFixtureType {
+  uint16_t nullAttribute;
+  bool firstSegmentNull;
+  bool secondSegmentNull;
+  bool expectedNull;
+};
+
+class CompositeNullFixture
+    : public testing::TestWithParam<CompositeNullFixtureType> {};
+
+TEST_P(CompositeNullFixture, CompositeKeyNullValues) {
+  const CompositeNullFixtureType &view = GetParam();
+
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer,
+                    UseExtendedDataType | view.nullAttribute, true, 0, 0, ' ',
+                    "", std::vector<char>()),
+      KeyDefinition(0, 4, 2, KeyDataType::Zstring,
+                    UseExtendedDataType | view.nullAttribute, false, 1, 0, ' ',
+                    "", std::vector<char>())};
+
+  Key key(keyDefinitions, 2);
+
+  uint8_t keyData[6];
+  memset(keyData, view.firstSegmentNull ? ' ' : 1, 2);
+  memset(keyData + 2, view.secondSegmentNull ? ' ' : 'a', 4);
+
+  auto actual = key.keyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+
+  ASSERT_EQ(actual.size(), 2u);
+  EXPECT_EQ(actual[0].isNull(), view.expectedNull);
+  EXPECT_EQ(actual[1].isNull(), view.expectedNull);
+}
+
+INSTANTIATE_TEST_CASE_P(
+    Key, CompositeNullFixture,
+    ::testing::ValuesIn(std::vector<CompositeNullFixtureType>{
+        {0, true, true, false},
+        {NullAllSegments, false, false, false},
+        {NullAllSegments, true, false, false},
+        {NullAllSegments, false, true, false},
+        {NullAllSegments, true, true, true},
+        {NullAnySegment, false, false, false},
+        {NullAnySegment, true, false, true},
+        {NullAnySegment, false, true, true},
+        {NullAnySegment, true, true, true}}));
+
+// A search key is never null, even when its bytes match the null value, so it
+// can still be compared against stored keys.
+TEST_P(CompositeNullFixture, CompositeSearchKeyIsNeverNull) {
+  const CompositeNullFixtureType &view = GetParam();
+
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer,
+                    UseExtendedDataType | view.nullAttribute, true, 0, 0, 0,
+                    "", std::vector<char>()),
+      KeyDefinition(0, 4, 2, KeyDataType::Zstring,
+                    UseExtendedDataType | view.nullAttribute, false, 1, 0, 0,
+                    "", std::vector<char>())};
+
+  Key key(keyDefinitions, 2);
+
+  uint8_t keyData[6] = {0};
+  if (!view.firstSegmentNull) {
+    keyData[0] = 0xFF;
+    keyData[1] = 0xFF;
+  }
+  if (!view.secondSegmentNull) {
+    keyData[2] = 'a';
+  }
+
+  auto actual = key.searchKeyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+
+  ASSERT_EQ(actual.size(), 2u);
+  ASSERT_FALSE(actual[0].isNull());
+  ASSERT_FALSE(actual[1].isNull());
+  EXPECT_EQ(actual[0].getIntegerValue(), view.firstSegmentNull ? 0 : -1);
+  EXPECT_EQ(actual[1].getStringValue(), view.secondSegmentNull ? "" : "a");
+}
+
+TEST(Key, SingleSearchKeyIsNeverNull) {
+  KeyDefinition keyDefinition(0, 2, 0, KeyDataType::Integer,
+                              UseExtendedDataType | NullAllSegments, false, 0,
+                              0, 0, "", std::vector<char>());
+  Key key(&keyDefinition, 1);
+
+  uint8_t keyData[2] = {0};
+  std::basic_string_view<uint8_t> keyDataView(keyData, sizeof(keyData));
+
+  EXPECT_TRUE(key.keyDataToSqliteObjects(keyDataView)[0].isNull());
+  auto actual = key.searchKeyDataToSqliteObjects(keyDataView)[0];
+  ASSERT_FALSE(actual.isNull());
+  EXPECT_EQ(actual.getIntegerValue(), 0);
+}
+
+TEST(Key, SingleZstringSearchKeyWithNullFirstByteIsEmpty) {
+  KeyDefinition keyDefinition(0, 8, 0, KeyDataType::Zstring,
+                              UseExtendedDataType | NullAllSegments, false, 0,
+                              0, 0, "", std::vector<char>());
+  Key key(&keyDefinition, 1);
+
+  uint8_t keyData[8] = {0, 'x', 'y'};
+  auto actual = key.searchKeyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)))[0];
+  ASSERT_FALSE(actual.isNull());
+  EXPECT_EQ(actual.getStringValue(), "");
+}
+
+// Two-segment key shaped like The Major BBS WGSGEN2.DAT key 0: a 30-byte
+// zstring (often empty) followed by a 25-byte zstring module name.
+static void wgsgen2Key(KeyDefinition (&defs)[2], uint16_t attributes) {
+  defs[0] = KeyDefinition(0, 30, 0, KeyDataType::Zstring,
+                          attributes | SegmentedKey, true, 0, 0, 0, "",
+                          std::vector<char>());
+  defs[1] = KeyDefinition(0, 25, 30, KeyDataType::Zstring, attributes, true, 0,
+                          1, 0, "", std::vector<char>());
+}
+
+static std::vector<BindableValue> wgsgen2KeyValue(const Key &key, const char *first,
+                                     const char *second) {
+  uint8_t record[55];
+  memset(record, 0, sizeof(record));
+  memcpy(record, first, strlen(first));
+  memcpy(record + 30, second, strlen(second));
+  return key.extractKeyInRecordToSqliteObjects(
+      std::basic_string_view<uint8_t>(record, sizeof(record)));
+}
+
+// An empty leading string segment is an ordinary value: the later segments
+// must still take part in the key, so records sort by them as in Btrieve.
+TEST(Key, CompositeKeyWithEmptyLeadingStringIsNotNull) {
+  KeyDefinition defs[2];
+  wgsgen2Key(defs, UseExtendedDataType | Duplicates | Modifiable);
+  Key key(defs, 2);
+
+  auto snmytime = wgsgen2KeyValue(key, "", "SNMYTIME");
+  auto wormsg = wgsgen2KeyValue(key, "", "WORMSG");
+
+  ASSERT_EQ(snmytime.size(), 2);
+  ASSERT_EQ(wormsg.size(), 2);
+  for (const auto &value : snmytime) ASSERT_FALSE(value.isNull());
+  for (const auto &value : wormsg) ASSERT_FALSE(value.isNull());
+  EXPECT_EQ(snmytime[0].getStringValue(), wormsg[0].getStringValue());
+  EXPECT_LT(snmytime[1].getStringValue(), wormsg[1].getStringValue());
+}
+
+// A composite key whose bytes are all zero is a real value unless the key is
+// declared nullable.
+TEST(Key, CompositeKeyAllZeroIsNotNullWithoutNullAttribute) {
+  KeyDefinition defs[2];
+  wgsgen2Key(defs, UseExtendedDataType | Duplicates | Modifiable);
+  Key key(defs, 2);
+
+  EXPECT_FALSE(wgsgen2KeyValue(key, "", "")[1].isNull());
+}
+
+TEST(Key, CompositeKeyAllNullValueIsNullWithNullAttribute) {
+  KeyDefinition defs[2];
+  wgsgen2Key(defs, UseExtendedDataType | Duplicates | NullAllSegments);
+  Key key(defs, 2);
+
+  EXPECT_TRUE(wgsgen2KeyValue(key, "", "")[0].isNull());
+  EXPECT_TRUE(wgsgen2KeyValue(key, "", "")[1].isNull());
+  EXPECT_FALSE(wgsgen2KeyValue(key, "", "WORMSG")[1].isNull());
+}
+
+// Like a composite key, a single string key is null only when declared
+// nullable; otherwise an empty string is an ordinary, indexed value
+// (The Major BBS GALALS2.DAT key 2 holds many).
+TEST(Key, EmptyStringKeyIsNotNullWithoutNullAttribute) {
+  for (auto type : {KeyDataType::Zstring, KeyDataType::Lstring,
+                    KeyDataType::String, KeyDataType::OldAscii}) {
+    KeyDefinition keyDefinition(0, 17, 0, type,
+                                UseExtendedDataType | Duplicates, false, 0, 0,
+                                0, "", std::vector<char>());
+    Key key(&keyDefinition, 1);
+    uint8_t record[17];
+    memset(record, 0, sizeof(record));
+    EXPECT_FALSE(key.extractKeyInRecordToSqliteObjects(
+                        std::basic_string_view<uint8_t>(record, sizeof(record)))
+                     [0]
+                     .isNull())
+        << "type " << type;
+  }
+}
+
+TEST(Key, EmptyStringKeyIsNullWithNullAttribute) {
+  KeyDefinition keyDefinition(0, 17, 0, KeyDataType::Zstring,
+                              UseExtendedDataType | NullAllSegments, false, 0,
+                              0, 0, "", std::vector<char>());
+  Key key(&keyDefinition, 1);
+  uint8_t record[17];
+  memset(record, 0, sizeof(record));
+  EXPECT_TRUE(key.extractKeyInRecordToSqliteObjects(
+                     std::basic_string_view<uint8_t>(record, sizeof(record)))[0]
+                  .isNull());
+}
+
+// A key is null only when every byte is the null value, for strings too, so a
+// ZSTRING with bytes after its terminator is an empty string, not null. Single
+// and composite keys follow the same rule.
+TEST(Key, ZstringWithBytesAfterTerminatorIsNotNull) {
+  KeyDefinition single(0, 8, 0, KeyDataType::Zstring,
+                       UseExtendedDataType | NullAllSegments, false, 0, 0, 0,
+                       "", std::vector<char>());
+  KeyDefinition composite[2] = {
+      KeyDefinition(0, 8, 0, KeyDataType::Zstring,
+                    UseExtendedDataType | NullAnySegment, true, 0, 0, 0, "",
+                    std::vector<char>()),
+      KeyDefinition(0, 2, 8, KeyDataType::Integer,
+                    UseExtendedDataType | NullAnySegment, false, 0, 1, 0, "",
+                    std::vector<char>())};
+
+  for (const Key &key : {Key(&single, 1), Key(composite, 2)}) {
+    uint8_t record[10] = {0, 'x', 'y', 0, 0, 0, 0, 0, 1, 0};
+    auto actual = key.extractKeyInRecordToSqliteObjects(
+        std::basic_string_view<uint8_t>(record, sizeof(record)));
+    ASSERT_FALSE(actual[0].isNull()) << key.getSegments().size();
+    EXPECT_EQ(actual[0].getStringValue(), "");
+
+    record[1] = record[2] = 0;
+    EXPECT_TRUE(key.extractKeyInRecordToSqliteObjects(
                        std::basic_string_view<uint8_t>(record, sizeof(record)))
-                    .getBlobValue();
-
-  uint8_t expected[] = {0x5, 0x5, 0x5, 0x5, 0x5, 0x5,
-                        0x5, 0x5, 'T', 'T', 'T', 'T'};
-
-  EXPECT_EQ(actual,
-            std::vector<uint8_t>(expected, expected + sizeof(expected)));
+                    [0]
+                        .isNull())
+        << key.getSegments().size();
+  }
 }
 
 struct ParameterizedKeyDataType {
@@ -214,8 +544,8 @@ TEST_P(ParameterizedKeyDataTypeFixture, NullValues) {
   // first segment is all spaces i.e. null
   memset(record + 2, ' ', 8);
 
-  auto actual = key.extractKeyInRecordToSqliteObject(
-      std::basic_string_view<uint8_t>(record, sizeof(record)));
+  auto actual = key.extractKeyInRecordToSqliteObjects(
+      std::basic_string_view<uint8_t>(record, sizeof(record)))[0];
 
   EXPECT_TRUE(actual.isNull());
 }
@@ -266,9 +596,10 @@ TEST(Key, ACSReplacementSingleKey_Zstring) {
   record[6] = (uint8_t)'%';
   record[7] = 0;
 
-  auto actual = key.extractKeyInRecordToSqliteObject(
-                       std::basic_string_view<uint8_t>(record, sizeof(record)))
-                    .getStringValue();
+  auto actual =
+      key.extractKeyInRecordToSqliteObjects(
+             std::basic_string_view<uint8_t>(record, sizeof(record)))[0]
+          .getStringValue();
 
   EXPECT_EQ(actual, "ABTZ%");
 }
@@ -297,9 +628,10 @@ TEST(Key, ACSReplacementSingleKey_String) {
   record[11] = (uint8_t)'t';
   record[12] = 0;
 
-  auto actual = key.extractKeyInRecordToSqliteObject(
-                       std::basic_string_view<uint8_t>(record, sizeof(record)))
-                    .getBlobValue();
+  auto actual =
+      key.extractKeyInRecordToSqliteObjects(
+             std::basic_string_view<uint8_t>(record, sizeof(record)))[0]
+          .getBlobValue();
 
   EXPECT_TRUE(memcmp(actual.data(), "ABTZ%\0\0ABT", 10) == 0);
 }
@@ -333,12 +665,11 @@ TEST_P(ParameterizedACSReplacementMultipleKeyFixture,
   memset(record, 0, sizeof(record));
   memcpy(record + 2, view.input, strlen(view.input));
 
-  auto actual = key.extractKeyInRecordToSqliteObject(
-                       std::basic_string_view<uint8_t>(record, sizeof(record)))
-                    .getBlobValue();
+  auto actual = key.extractKeyInRecordToSqliteObjects(
+      std::basic_string_view<uint8_t>(record, sizeof(record)));
 
-  auto keyChars = reinterpret_cast<const char *>(actual.data());
-  EXPECT_EQ(std::string(keyChars, std::min(actual.size(), strlen(keyChars))),
+  ASSERT_EQ(actual.size(), 2u);
+  EXPECT_EQ(actual[0].getStringValue() + actual[1].getStringValue(),
             view.expected);
 }
 
@@ -358,6 +689,318 @@ createACSReplacementMultipleKey() {
 INSTANTIATE_TEST_CASE_P(Key, ParameterizedACSReplacementMultipleKeyFixture,
                         ::testing::ValuesIn(createACSReplacementMultipleKey()));
 
+// An LSTRING segment after an INTEGER one: its first byte is the length,
+// which is clamped to the segment, and the bytes past it aren't part of the
+// key.
+TEST(Key, CompositeLstringSegmentValues) {
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer, UseExtendedDataType, true,
+                    0, 0, 0, "", std::vector<char>()),
+      KeyDefinition(0, 8, 2, KeyDataType::Lstring, UseExtendedDataType, false,
+                    0, 1, 0, "", std::vector<char>())};
+  Key key(keyDefinitions, 2);
+
+  struct {
+    uint8_t length;
+    const char *expected;
+  } cases[] = {{3, "abc"}, {0, ""}, {7, "abcdefg"}, {200, "abcdefg"}};
+
+  for (auto &c : cases) {
+    uint8_t keyData[10] = {0xFF, 0xFF, c.length, 'a', 'b', 'c',
+                           'd',  'e',  'f',      'g'};
+    auto actual = key.keyDataToSqliteObjects(
+        std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+    ASSERT_EQ(actual.size(), 2u);
+    EXPECT_EQ(actual[0].getIntegerValue(), -1);
+    EXPECT_EQ(actual[1].getStringValue(), c.expected)
+        << "length " << static_cast<int>(c.length);
+  }
+}
+
+// The ACS maps only the segments that use it. An INTEGER segment's bytes are
+// left alone, so 'a' 'a' stays 0x6161 rather than becoming 'A' 'A'.
+TEST(Key, CompositeACSLeavesIntegerSegment) {
+  std::vector<char> acs = upperACS();
+
+  for (bool stringFirst : {false, true}) {
+    KeyDefinition intSegment(0, 2, stringFirst ? 8 : 0, KeyDataType::Integer,
+                             UseExtendedDataType, false, 0, 0, 0, "",
+                             std::vector<char>());
+    KeyDefinition stringSegment(0, 8, stringFirst ? 0 : 2,
+                                KeyDataType::Zstring,
+                                UseExtendedDataType | NumberedACS, false, 0, 0,
+                                0, "upper", acs);
+    KeyDefinition keyDefinitions[2] = {
+        stringFirst ? stringSegment : intSegment,
+        stringFirst ? intSegment : stringSegment};
+    Key key(keyDefinitions, 2);
+
+    uint8_t record[10] = {0};
+    memcpy(record + (stringFirst ? 0 : 2), "abc", 3);
+    record[stringFirst ? 8 : 0] = 'a';
+    record[stringFirst ? 9 : 1] = 'a';
+
+    auto actual = key.extractKeyInRecordToSqliteObjects(
+        std::basic_string_view<uint8_t>(record, sizeof(record)));
+    ASSERT_EQ(actual.size(), 2u);
+    EXPECT_EQ(actual[stringFirst ? 1 : 0].getIntegerValue(), 0x6161)
+        << "stringFirst " << stringFirst;
+    EXPECT_EQ(actual[stringFirst ? 0 : 1].getStringValue(), "ABC")
+        << "stringFirst " << stringFirst;
+  }
+}
+
+// The ACS maps an LSTRING's characters but not its length byte, here mapped
+// by the ACS from 3 to 7.
+TEST(Key, CompositeACSLstringKeepsLengthByte) {
+  std::vector<char> acs = upperACS();
+  acs[3] = 7;
+
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer, UseExtendedDataType, true,
+                    0, 0, 0, "", std::vector<char>()),
+      KeyDefinition(0, 8, 2, KeyDataType::Lstring,
+                    UseExtendedDataType | NumberedACS, false, 0, 1, 0, "upper",
+                    acs)};
+  Key key(keyDefinitions, 2);
+
+  uint8_t keyData[10] = {3, 0, 3, 'a', 'b', 'c', 'd', 'e', 'f', 'g'};
+  auto actual = key.keyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+  ASSERT_EQ(actual.size(), 2u);
+  // the integer segment isn't mapped either
+  EXPECT_EQ(actual[0].getIntegerValue(), 3);
+  EXPECT_EQ(actual[1].getStringValue(), "ABC");
+}
+
+// A case insensitive string segment without an ACS sorts by its upper case
+// letters. Only a to z change, so '_' still sorts after 'Z', as with an
+// upper casing ACS.
+class CaseInsensitiveFixture : public testing::TestWithParam<KeyDataType> {};
+
+TEST_P(CaseInsensitiveFixture, FoldsToUpperCase) {
+  KeyDefinition keyDefinition(0, 8, 0, GetParam(),
+                              UseExtendedDataType | CaseInsensitiveKey, false,
+                              0, 0, 0, "", std::vector<char>());
+  ASSERT_TRUE(keyDefinition.isCaseInsensitive());
+  Key key(&keyDefinition, 1);
+
+  const bool lstring = GetParam() == KeyDataType::Lstring;
+  uint8_t keyData[8] = {0};
+  memcpy(keyData + lstring, "aZ_z\xE9", 5);
+  if (lstring) {
+    keyData[0] = 5;
+  }
+
+  auto actual = key.keyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)))[0];
+
+  if (GetParam() == KeyDataType::String) {
+    auto blob = actual.getBlobValue();
+    EXPECT_EQ(std::string(blob.begin(), blob.end()),
+              std::string("AZ_Z\xE9\0\0\0", 8));
+  } else {
+    EXPECT_EQ(actual.getStringValue(), "AZ_Z\xE9");
+  }
+}
+
+INSTANTIATE_TEST_CASE_P(Key, CaseInsensitiveFixture,
+                        ::testing::Values(KeyDataType::String,
+                                          KeyDataType::Lstring,
+                                          KeyDataType::Zstring,
+                                          KeyDataType::OldAscii));
+
+// NOCASE_KEY has no effect on a segment that isn't a string.
+TEST(Key, CaseInsensitiveIntegerSegmentIsUnchanged) {
+  KeyDefinition keyDefinition(0, 2, 0, KeyDataType::Integer,
+                              UseExtendedDataType | CaseInsensitiveKey, false,
+                              0, 0, 0, "", std::vector<char>());
+  EXPECT_FALSE(keyDefinition.isCaseInsensitive());
+  Key key(&keyDefinition, 1);
+
+  uint8_t keyData[2] = {'a', 'a'};
+  EXPECT_EQ(key.keyDataToSqliteObjects(
+                   std::basic_string_view<uint8_t>(keyData, sizeof(keyData)))[0]
+                .getIntegerValue(),
+            0x6161);
+}
+
+// With an ACS the case flag is part of MultipleACS, and the ACS governs the
+// order: here one that lower cases.
+TEST(Key, ACSOverridesCaseInsensitivity) {
+  std::vector<char> acs(ACS_LENGTH);
+  for (int i = 0; i < ACS_LENGTH; ++i) {
+    acs[i] = static_cast<char>(tolower(i));
+  }
+
+  KeyDefinition keyDefinition(0, 8, 0, KeyDataType::Zstring,
+                              UseExtendedDataType | MultipleACS, false, 0, 0,
+                              0, "lower", acs);
+  EXPECT_FALSE(keyDefinition.isCaseInsensitive());
+  Key key(&keyDefinition, 1);
+
+  uint8_t keyData[8] = {'A', 'b', 'C', 0};
+  EXPECT_EQ(key.keyDataToSqliteObjects(
+                   std::basic_string_view<uint8_t>(keyData, sizeof(keyData)))[0]
+                .getStringValue(),
+            "abc");
+}
+
+// Case insensitivity is per segment.
+TEST(Key, CompositeCaseInsensitiveSegment) {
+  KeyDefinition keyDefinitions[2] = {
+      KeyDefinition(0, 4, 0, KeyDataType::Zstring,
+                    UseExtendedDataType | CaseInsensitiveKey, true, 0, 0, 0,
+                    "", std::vector<char>()),
+      KeyDefinition(0, 4, 4, KeyDataType::Zstring, UseExtendedDataType, false,
+                    0, 1, 0, "", std::vector<char>())};
+  Key key(keyDefinitions, 2);
+
+  uint8_t keyData[8] = {'a', 'B', 'c', 0, 'a', 'B', 'c', 0};
+  auto actual = key.keyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+  ASSERT_EQ(actual.size(), 2u);
+  EXPECT_EQ(actual[0].getStringValue(), "ABC");
+  EXPECT_EQ(actual[1].getStringValue(), "aBc");
+}
+
+// A search key truncated before or at an LSTRING's length byte converts to an
+// empty string rather than reading past the key data.
+TEST(Key, TruncatedCollatedLstringSearchKey) {
+  for (uint16_t attributes : {CaseInsensitiveKey, NumberedACS}) {
+    KeyDefinition keyDefinition(
+        0, 8, 0, KeyDataType::Lstring, UseExtendedDataType | attributes, false,
+        0, 0, 0, attributes == NumberedACS ? "upper" : "",
+        attributes == NumberedACS ? upperACS() : std::vector<char>());
+    Key key(&keyDefinition, 1);
+
+    uint8_t keyData[1] = {5};
+    for (size_t length : {0, 1}) {
+      EXPECT_EQ(key.searchKeyDataToSqliteObjects(
+                       std::basic_string_view<uint8_t>(keyData, length))[0]
+                    .getStringValue(),
+                "")
+          << "attributes " << attributes << " length " << length;
+    }
+  }
+}
+
+// Types that convert to INTEGER when their values fit, else BLOB.
+TEST(Key, TypedColumnDefinitions) {
+  struct {
+    KeyDataType type;
+    uint16_t length;
+    const char *expected;
+  } cases[] = {
+      {KeyDataType::Date, 4, "INTEGER"},
+      {KeyDataType::Time, 4, "INTEGER"},
+      {KeyDataType::Decimal, 9, "INTEGER"},  // 17 digits
+      {KeyDataType::Decimal, 10, "BLOB"},    // 19 digits
+      {KeyDataType::Money, 9, "INTEGER"},
+      {KeyDataType::Numeric, 18, "INTEGER"},
+      {KeyDataType::Numeric, 19, "BLOB"},
+      {KeyDataType::NumericSA, 18, "INTEGER"},
+      {KeyDataType::NumericSTS, 19, "INTEGER"},  // 18 digits and a sign
+      {KeyDataType::NumericSTS, 20, "BLOB"},
+      {KeyDataType::Bfloat, 4, "INTEGER"},
+      {KeyDataType::Bfloat, 8, "INTEGER"},
+      {KeyDataType::Bfloat, 6, "BLOB"},
+      {KeyDataType::Currency, 8, "INTEGER"},
+      {KeyDataType::Timestamp, 8, "INTEGER"},
+      {KeyDataType::Logical, 2, "BLOB"},
+  };
+
+  for (auto &c : cases) {
+    KeyDefinition keyDefinition(0, c.length, 0, c.type, UseExtendedDataType,
+                                false, 0, 0, 0, "", std::vector<char>());
+    Key key(&keyDefinition, 1);
+    EXPECT_EQ(key.getSqliteColumnDefinitions()[0],
+              std::string("key_0 ") + c.expected + " NOT NULL UNIQUE")
+        << "type " << c.type << " length " << c.length;
+  }
+}
+
+// A search key cut short reads its missing bytes as zero, which for a DECIMAL
+// leaves a zero sign nibble, positive.
+TEST(Key, TruncatedDecimalSearchKey) {
+  KeyDefinition keyDefinition(0, 3, 0, KeyDataType::Decimal,
+                              UseExtendedDataType, false, 0, 0, 0, "",
+                              std::vector<char>());
+  Key key(&keyDefinition, 1);
+
+  uint8_t keyData[1] = {0x12};
+  EXPECT_EQ(key.searchKeyDataToSqliteObjects(
+                   std::basic_string_view<uint8_t>(keyData, sizeof(keyData)))[0]
+                .getIntegerValue(),
+            12000);
+}
+
+// A null indicator segment is 0 for a value and 1 for any true null, or the
+// byte itself when DISTINCT, and a true null's field reads as zero bytes.
+TEST(Key, NullIndicatorSegmentValues) {
+  for (bool distinct : {false, true}) {
+    KeyDefinition keyDefinitions[2] = {
+        KeyDefinition(0, 1, 0, KeyDataType::NullIndicator,
+                      UseExtendedDataType | SegmentedKey |
+                          (distinct ? CaseInsensitiveKey : 0),
+                      true, 0, 0, 0, "", std::vector<char>()),
+        KeyDefinition(0, 4, 1, KeyDataType::Zstring, UseExtendedDataType,
+                      false, 0, 1, 0, "", std::vector<char>())};
+    Key key(keyDefinitions, 2);
+    ASSERT_TRUE(key.hasNullIndicator());
+    EXPECT_EQ(keyDefinitions[0].isDistinctNullIndicator(), distinct);
+
+    for (uint8_t indicator : {0, 1, 17, 0xFF}) {
+      uint8_t keyData[5] = {indicator, 'a', 'b', 'c', 0};
+      auto actual = key.keyDataToSqliteObjects(
+          std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+      ASSERT_EQ(actual.size(), 2u);
+      EXPECT_EQ(actual[0].getIntegerValue(),
+                indicator == 0 || distinct ? indicator : 1)
+          << "indicator " << static_cast<int>(indicator);
+      EXPECT_EQ(actual[1].getStringValue(), indicator == 0 ? "abc" : "")
+          << "indicator " << static_cast<int>(indicator);
+    }
+  }
+}
+
+TEST(Key, NullIndicatorMasksIntegerField) {
+  KeyDefinition keyDefinitions[3] = {
+      KeyDefinition(0, 2, 0, KeyDataType::Integer,
+                    UseExtendedDataType | SegmentedKey, true, 0, 0, 0, "",
+                    std::vector<char>()),
+      KeyDefinition(0, 1, 2, KeyDataType::NullIndicator,
+                    UseExtendedDataType | SegmentedKey, true, 0, 1, 0, "",
+                    std::vector<char>()),
+      KeyDefinition(0, 2, 3, KeyDataType::Integer, UseExtendedDataType, false,
+                    0, 2, 0, "", std::vector<char>())};
+  Key key(keyDefinitions, 3);
+
+  // only the field after the indicator is masked
+  uint8_t keyData[5] = {0xFF, 0xFF, 1, 0xFE, 0xFF};
+  auto actual = key.keyDataToSqliteObjects(
+      std::basic_string_view<uint8_t>(keyData, sizeof(keyData)));
+  ASSERT_EQ(actual.size(), 3u);
+  EXPECT_EQ(actual[0].getIntegerValue(), -1);
+  EXPECT_EQ(actual[1].getIntegerValue(), 1);
+  EXPECT_EQ(actual[2].getIntegerValue(), 0);
+  EXPECT_EQ(key.getSqliteColumnDefinitions()[1], "key_0_1 INTEGER NOT NULL");
+}
+
+TEST(Key, NullIndicatorSegmentDefinition) {
+  EXPECT_THROW(KeyDefinition(0, 2, 0, KeyDataType::NullIndicator,
+                             UseExtendedDataType | SegmentedKey, true, 0, 0,
+                             0, "", std::vector<char>()),
+               BtrieveException);
+
+  // the ACS flag is ignored, so no ACS is needed
+  KeyDefinition keyDefinition(
+      0, 1, 0, KeyDataType::NullIndicator,
+      UseExtendedDataType | SegmentedKey | NumberedACS, true, 0, 0, 0, "",
+      std::vector<char>());
+  EXPECT_FALSE(keyDefinition.requiresACS());
+}
+
 TEST(Key, FloatKeys) {
   KeyDefinition keyDefinition(0, sizeof(float), 0, KeyDataType::Float,
                               UseExtendedDataType, false, 0, 0, 0, "",
@@ -367,9 +1010,8 @@ TEST(Key, FloatKeys) {
 
   float value = 2.435f;
 
-  auto actual = key
-                    .keyDataToSqliteObject(std::basic_string_view<uint8_t>(
-                        reinterpret_cast<uint8_t *>(&value), sizeof(value)))
+  auto actual = key.keyDataToSqliteObjects(std::basic_string_view<uint8_t>(
+      reinterpret_cast<uint8_t *>(&value), sizeof(value)))[0]
                     .getDoubleValue();
 
   EXPECT_EQ(actual, value);
@@ -384,9 +1026,8 @@ TEST(Key, DoubleKeys) {
 
   double value = 2.435f;
 
-  auto actual = key
-                    .keyDataToSqliteObject(std::basic_string_view<uint8_t>(
-                        reinterpret_cast<uint8_t *>(&value), sizeof(value)))
+  auto actual = key.keyDataToSqliteObjects(std::basic_string_view<uint8_t>(
+      reinterpret_cast<uint8_t *>(&value), sizeof(value)))[0]
                     .getDoubleValue();
 
   EXPECT_EQ(actual, value);

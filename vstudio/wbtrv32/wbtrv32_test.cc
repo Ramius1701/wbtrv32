@@ -177,12 +177,31 @@ TEST_F(wbtrv32Test, GetPosition) {
                     -1, 0),
             btrieve::BtrieveError::Success);
 
+  // no record is current until one is read
+  ASSERT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &dwPosition,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::InvalidPositioning);
+
+  uint8_t record[80];
+  DWORD dwRecordLength = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, posBlock, record,
+                    &dwRecordLength, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+
   ASSERT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &dwPosition,
                     &dwDataBufferLength, nullptr, 0, 0),
             btrieve::BtrieveError::Success);
 
   ASSERT_EQ(dwDataBufferLength, 4u);
   ASSERT_EQ(dwPosition, 1u);
+
+  // nor after it is deleted
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Delete, posBlock, nullptr, nullptr,
+                    nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &dwPosition,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::InvalidPositioning);
 
   ASSERT_EQ(btrcall(btrieve::OperationCode::Close, posBlock, nullptr,
                     &dwDataBufferLength, nullptr, 0, 0),
@@ -291,7 +310,8 @@ TEST_F(wbtrv32Test, StatsDatabase) {
   EXPECT_EQ(lpKeySpec->position, 3);
   EXPECT_EQ(lpKeySpec->length, 32);
   EXPECT_EQ(lpKeySpec->attributes, UseExtendedDataType | Duplicates);
-  EXPECT_EQ(lpKeySpec->uniqueKeys, 4u);
+  // every record is "Sysop"
+  EXPECT_EQ(lpKeySpec->uniqueKeys, 1u);
   EXPECT_EQ(lpKeySpec->extendedDataType, btrieve::KeyDataType::Zstring);
   EXPECT_EQ(lpKeySpec->nullValue, 0);
   EXPECT_EQ(lpKeySpec->reserved, 0);
@@ -337,7 +357,7 @@ TEST_F(wbtrv32Test, StatsV6DatabaseWithMultiSegmentKeys) {
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/GALTELA.DAT");
   ASSERT_FALSE(mbbsEmuDb.empty());
 
-  unsigned char buffer[80];
+  unsigned char buffer[512];
   char fileName[MAX_PATH] = "test";
   DWORD dwDataBufferLength = sizeof(buffer);
 
@@ -352,7 +372,8 @@ TEST_F(wbtrv32Test, StatsV6DatabaseWithMultiSegmentKeys) {
                     &dwDataBufferLength, fileName, sizeof(fileName), 0),
             btrieve::BtrieveError::Success);
 
-  ASSERT_EQ(dwDataBufferLength, 80u);
+  // file spec, four key segments and the one ACS they use
+  ASSERT_EQ(dwDataBufferLength, 16u + 4 * 16u + 265u);
   // we don't support file name, so just 0 it out
   ASSERT_EQ(*fileName, 0);
 
@@ -397,7 +418,7 @@ TEST_F(wbtrv32Test, StatsV6DatabaseWithMultiSegmentKeys) {
   EXPECT_EQ(lpKeySpec->length, 16);
   EXPECT_EQ(lpKeySpec->attributes,
             UseExtendedDataType | NumberedACS | Duplicates);
-  EXPECT_EQ(lpKeySpec->uniqueKeys, 73u);
+  EXPECT_EQ(lpKeySpec->uniqueKeys, 2u);
   EXPECT_EQ(lpKeySpec->extendedDataType, btrieve::KeyDataType::Zstring);
   EXPECT_EQ(lpKeySpec->nullValue, 0);
   EXPECT_EQ(lpKeySpec->reserved, 0);
@@ -415,6 +436,14 @@ TEST_F(wbtrv32Test, StatsV6DatabaseWithMultiSegmentKeys) {
   EXPECT_EQ(lpKeySpec->reserved, 0);
   EXPECT_EQ(lpKeySpec->number, 2);
   EXPECT_EQ(lpKeySpec->acsNumber, 0);
+
+  wbtrv32::LPACSCREATEDATA lpAcsData =
+      reinterpret_cast<wbtrv32::LPACSCREATEDATA>(lpKeySpec + 1);
+  EXPECT_EQ(lpAcsData->header, 0xAC);
+  EXPECT_EQ(std::string(lpAcsData->name, sizeof(lpAcsData->name)),
+            std::string("GALCAPS\0", 8));
+  EXPECT_EQ(lpAcsData->acs['a'], 'A');
+  EXPECT_EQ(lpAcsData->acs['1'], '1');
 }
 
 TEST_F(wbtrv32Test, StatsTooSmallBuffer) {
@@ -463,6 +492,16 @@ TEST_F(wbtrv32Test, Delete) {
   wbtrv32::LPFILESPEC lpFileSpec =
       reinterpret_cast<wbtrv32::LPFILESPEC>(buffer);
   ASSERT_EQ(lpFileSpec->recordCount, 4u);
+
+  // nothing is current straight after Open
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Delete, posBlock, nullptr, nullptr,
+                    nullptr, 0, 0),
+            btrieve::BtrieveError::InvalidPositioning);
+
+  dwDataBufferLength = sizeof(buffer);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, posBlock, buffer,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
 
   ASSERT_EQ(btrcall(btrieve::OperationCode::Delete, posBlock, nullptr, nullptr,
                     nullptr, 0, 0),
@@ -550,6 +589,42 @@ TEST_F(wbtrv32Test, StepFirst) {
   ASSERT_EQ(position, 2u);
 }
 
+// Open makes the first record the physical next one, so Step Next returns it,
+// and there is nothing before it.
+TEST_F(wbtrv32Test, StepAfterOpen) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  RECORD record;
+  DWORD dwDataBufferLength = sizeof(record);
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepNext, posBlock, &record,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(record.int1, 3444);
+  EXPECT_EQ(record.int2, 1);
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Close, posBlock, nullptr, nullptr,
+                    nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  dwDataBufferLength = sizeof(record);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::StepPrevious, posBlock, &record,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::EndOfFile);
+}
+
 TEST_F(wbtrv32Test, StepDataUnderrun) {
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   ASSERT_FALSE(mbbsEmuDb.empty());
@@ -586,6 +661,14 @@ TEST_F(wbtrv32Test, StepDataUnderrun) {
   };
 
   for (size_t i = 0; i < ARRAYSIZE(codesToTest); ++i) {
+    // a short buffer still moves to the record (as in Btrieve), so start each
+    // StepNext from the first record rather than wherever the last step left
+    if (codesToTest[i] % 100 == btrieve::OperationCode::StepNext) {
+      DWORD fullLength = sizeof(record);
+      ASSERT_EQ(btrcall(btrieve::OperationCode::StepFirst, posBlock, &record,
+                        &fullLength, nullptr, 0, 0),
+                btrieve::BtrieveError::Success);
+    }
     DWORD dwDataBufferLength = sizeof(record) - 1;
     ASSERT_EQ(btrcall(codesToTest[i], posBlock, &record, &dwDataBufferLength,
                       nullptr, 0, 0),
@@ -779,6 +862,101 @@ TEST_F(wbtrv32Test, GetDirectWithKeyDataBufferOverrun) {
       btrcall(btrieve::OperationCode::GetDirectChunkOrRecord, posBlock, &record,
               &dwDataBufferLength, &returnedKey, sizeof(returnedKey), 1),
       btrieve::BtrieveError::DataBufferLengthOverrun);
+
+  // the key path is still positioned on record 4
+  ASSERT_EQ(returnedKey, -615634567u);
+  dwDataBufferLength = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
+                    &dwDataBufferLength, &returnedKey, sizeof(returnedKey), 1),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(returnedKey, 3444u);
+}
+
+TEST_F(wbtrv32Test, GetDirectInvalidKeyPath) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  RECORD record;
+  DWORD dwDataBufferLength = sizeof(record);
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  uint32_t returnedKey;
+
+  *reinterpret_cast<uint32_t*>(&record) = 4;
+  ASSERT_EQ(
+      btrcall(btrieve::OperationCode::GetDirectChunkOrRecord, posBlock, &record,
+              &dwDataBufferLength, &returnedKey, sizeof(returnedKey), 4),
+      btrieve::BtrieveError::InvalidKeyPath);
+}
+
+// Get Direct with key number -1 leaves no logical currency behind, even when
+// a Get had established one.
+TEST_F(wbtrv32Test, GetDirectWithoutKeyClearsLogicalCurrency) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  RECORD record;
+  DWORD dwDataBufferLength = sizeof(record);
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  uint32_t key;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, &record,
+                    &dwDataBufferLength, &key, sizeof(key), 1),
+            btrieve::BtrieveError::Success);
+
+  *reinterpret_cast<uint32_t*>(&record) = 4;
+  dwDataBufferLength = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::GetDirectChunkOrRecord, posBlock,
+                    &record, &dwDataBufferLength, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+
+  dwDataBufferLength = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
+                    &dwDataBufferLength, &key, sizeof(key), 1),
+            btrieve::BtrieveError::InvalidPositioning);
+}
+
+// Step First and Step Last destroy logical currency, so a Get Next after them
+// has nothing to continue from.
+TEST_F(wbtrv32Test, StepFirstAndLastClearLogicalCurrency) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, nullptr,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  for (WORD step : {btrieve::OperationCode::StepFirst,
+                    btrieve::OperationCode::StepLast}) {
+    RECORD record;
+    DWORD dwDataBufferLength = sizeof(record);
+    uint32_t key;
+    ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, &record,
+                      &dwDataBufferLength, &key, sizeof(key), 1),
+              btrieve::BtrieveError::Success);
+
+    dwDataBufferLength = sizeof(record);
+    ASSERT_EQ(btrcall(step, posBlock, &record, &dwDataBufferLength, nullptr, 0,
+                      0),
+              btrieve::BtrieveError::Success);
+
+    dwDataBufferLength = sizeof(record);
+    EXPECT_EQ(btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
+                      &dwDataBufferLength, &key, sizeof(key), 1),
+              btrieve::BtrieveError::InvalidPositioning);
+  }
 }
 
 TEST_F(wbtrv32Test, GetDirectWithKey_KeyBufferTooShort) {
@@ -1370,6 +1548,20 @@ TEST_F(wbtrv32Test, UpdateWithKey) {
 
   ASSERT_EQ(reinterpret_cast<wbtrv32::LPFILESPEC>(buffer)->recordCount, 4u);
 
+  // the Update positioned key 1 on the updated record
+  memset(&record, 0, sizeof(record));
+  dwDataBufferLength = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
+                    &dwDataBufferLength, key, sizeof(key), 1),
+            btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(*reinterpret_cast<int32_t*>(key), 3444);
+
+  ASSERT_STREQ(record.string1, "Sysop");
+  ASSERT_EQ(record.int1, 3444);
+  ASSERT_STREQ(record.string2, "3444");
+  ASSERT_EQ(record.int2, 1);
+
   // requery just to make sure the data was inserted properly
   memset(&record, 0, sizeof(record));
 
@@ -1383,19 +1575,6 @@ TEST_F(wbtrv32Test, UpdateWithKey) {
   ASSERT_EQ(record.int2, 4);
   ASSERT_STREQ(record.string1, "Sysop");
   ASSERT_STREQ(record.string2, "stringValue");
-
-  memset(&record, 0, sizeof(record));
-  dwDataBufferLength = sizeof(record);
-  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireNext, posBlock, &record,
-                    &dwDataBufferLength, key, sizeof(key), 1),
-            btrieve::BtrieveError::Success);
-
-  ASSERT_EQ(*reinterpret_cast<int32_t*>(key), 3444);
-
-  ASSERT_STREQ(record.string1, "Sysop");
-  ASSERT_EQ(record.int1, 3444);
-  ASSERT_STREQ(record.string2, "3444");
-  ASSERT_EQ(record.int2, 1);
 }
 
 TEST_F(wbtrv32Test, UpdateWithInvalidKey) {
@@ -2072,6 +2251,60 @@ TEST_F(wbtrv32Test, StopClosesAllDatabases) {
   ASSERT_EQ(btrcall(btrieve::OperationCode::Close, posBlock, nullptr,
                     &dwDataBufferLength, nullptr, 0, 0),
             btrieve::BtrieveError::FileNotOpen);
+}
+
+// The Major BBS reads a record with a lock bias, then releases it the way
+// dfaUnlockCur() does: Unlock with key number -1 and the record's position
+// in the data buffer. Any non-zero status here would halt the BBS.
+TEST_F(wbtrv32Test, UnlockSingleRecordByPosition) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  RECORD record;
+  uint32_t position;
+  DWORD dwDataBufferLength = sizeof(record);
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(
+      btrcall(btrieve::OperationCode::StepFirst_SingleWaitRecordLock, posBlock,
+              &record, &dwDataBufferLength, nullptr, 0, 0),
+      btrieve::BtrieveError::Success);
+
+  dwDataBufferLength = sizeof(position);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &position,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+
+  dwDataBufferLength = sizeof(position);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Unlock, posBlock, &position,
+                    &dwDataBufferLength, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+}
+
+// dfaUnlock(pos, keynum) with keynum >= 0 sends no data buffer at all.
+TEST_F(wbtrv32Test, UnlockCurrentRecordByKeyNumber) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  DWORD dwDataBufferLength = 0;
+
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  dwDataBufferLength = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Unlock, posBlock, nullptr,
+                    &dwDataBufferLength, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
 }
 
 TEST_F(wbtrv32Test, CreateSingleKey) {
@@ -3136,4 +3369,805 @@ TEST_F(wbtrv32Test, GetNextExtendedFollowsTheKeyPath) {
   btrcall(btrieve::OperationCode::Close, posBlock, nullptr, nullptr, nullptr, 0,
           0);
   memset(posBlock, 0, sizeof(posBlock));
+}
+
+// The engine adds a record-lock bias (+100..+400) to Get and Query
+// operations (dfaAcqEQ etc. with a lock). Locks are ignored, so every biased
+// operation must behave exactly like its unbiased form; any non-zero status
+// would halt the BBS.
+TEST_F(wbtrv32Test, RecordLockBiasIsIgnoredByKeyedOperations) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  DWORD dwDataBufferLength = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  // positioning operations, then Next/Previous which continue from them
+  const btrieve::OperationCode positioning[] = {
+      btrieve::OperationCode::AcquireFirst,
+      btrieve::OperationCode::AcquireLast,
+      btrieve::OperationCode::AcquireEqual,
+      btrieve::OperationCode::AcquireGreater,
+      btrieve::OperationCode::AcquireGreaterOrEqual,
+      btrieve::OperationCode::AcquireLess,
+      btrieve::OperationCode::AcquireLessOrEqual,
+      btrieve::OperationCode::QueryFirst,
+      btrieve::OperationCode::QueryLast,
+      btrieve::OperationCode::QueryEqual,
+      btrieve::OperationCode::QueryGreater,
+      btrieve::OperationCode::QueryGreaterOrEqual,
+      btrieve::OperationCode::QueryLess,
+      btrieve::OperationCode::QueryLessOrEqual,
+  };
+  const btrieve::OperationCode continuing[] = {
+      btrieve::OperationCode::AcquireNext,
+      btrieve::OperationCode::AcquirePrevious,
+      btrieve::OperationCode::QueryNext,
+      btrieve::OperationCode::QueryPrevious,
+  };
+
+  for (auto op : positioning) {
+    for (auto cont : continuing) {
+      int results[2][2];
+      uint32_t keys[2][2];
+      for (int bias = 0; bias <= 400; bias += 100) {
+        for (int pass = 0; pass < 2; ++pass) {
+          // pass 0 is unbiased (the reference), pass 1 adds the lock bias
+          const int add = pass == 0 ? 0 : bias;
+          RECORD record;
+          uint32_t key = 7776;
+          dwDataBufferLength = sizeof(record);
+          results[pass][0] = btrcall(op + add, posBlock, &record,
+                                     &dwDataBufferLength, &key, 255, 1);
+          keys[pass][0] = key;
+          dwDataBufferLength = sizeof(record);
+          results[pass][1] = btrcall(cont + add, posBlock, &record,
+                                     &dwDataBufferLength, &key, 255, 1);
+          keys[pass][1] = key;
+        }
+        ASSERT_EQ(results[1][0], btrieve::BtrieveError::Success)
+            << "op " << op + bias;
+        ASSERT_EQ(results[0][0], results[1][0]) << "op " << op + bias;
+        ASSERT_EQ(keys[0][0], keys[1][0]) << "op " << op + bias;
+        ASSERT_EQ(results[0][1], results[1][1])
+            << "op " << op + bias << " then " << cont + bias;
+        ASSERT_EQ(keys[0][1], keys[1][1])
+            << "op " << op + bias << " then " << cont + bias;
+      }
+    }
+  }
+}
+
+// A two-segment key shaped like The Major BBS WGSGEN2.DAT key 0: a 30-byte
+// zstring that is often empty, then a 25-byte zstring module name.
+class CompositeEmptyLeadingStringTest : public wbtrv32Test {
+ protected:
+  static const int RECORD_LENGTH = 60;
+
+  BtrieveError create(const std::filesystem::path &path, bool inMemory) {
+    unsigned char buffer[256];
+    memset(buffer, 0, sizeof(buffer));
+
+    auto lpFileSpec = reinterpret_cast<wbtrv32::LPFILESPEC>(buffer);
+    lpFileSpec->pageSize = 4096;
+    lpFileSpec->numberOfKeys = 1;
+    lpFileSpec->logicalFixedRecordLength = RECORD_LENGTH;
+    lpFileSpec->fileVersion = 0x60;
+    lpFileSpec->physicalPageSize = inMemory ? 0xFF : 0;
+
+    auto lpKeySpec = reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
+    lpKeySpec[0].position = 1;
+    lpKeySpec[0].length = 30;
+    lpKeySpec[0].attributes =
+        UseExtendedDataType | Duplicates | Modifiable | SegmentedKey;
+    lpKeySpec[0].extendedDataType = btrieve::KeyDataType::Zstring;
+    lpKeySpec[1].position = 31;
+    lpKeySpec[1].length = 25;
+    lpKeySpec[1].attributes = UseExtendedDataType | Duplicates | Modifiable;
+    lpKeySpec[1].extendedDataType = btrieve::KeyDataType::Zstring;
+
+    DWORD length = reinterpret_cast<unsigned char *>(lpKeySpec + 2) - buffer;
+    return static_cast<BtrieveError>(
+        btrcall(btrieve::OperationCode::Create, posBlock, buffer, &length,
+                const_cast<char *>(toStdString(path).c_str()), -1, 0));
+  }
+
+  BtrieveError open(const std::filesystem::path &path) {
+    DWORD length = 0;
+    return static_cast<BtrieveError>(
+        btrcall(btrieve::OperationCode::Open, posBlock, nullptr, &length,
+                const_cast<char *>(toStdString(path).c_str()), -1, 0));
+  }
+
+  BtrieveError insert(const char *module) {
+    unsigned char record[RECORD_LENGTH];
+    memset(record, 0, sizeof(record));
+    strcpy(reinterpret_cast<char *>(record + 30), module);
+    DWORD length = sizeof(record);
+    return static_cast<BtrieveError>(btrcall(btrieve::OperationCode::Insert,
+                                             posBlock, record, &length,
+                                             nullptr, 0, -1));
+  }
+
+  // runs a keyed operation on key 0 and returns the record's module name
+  std::string get(WORD operation, const char *module, BtrieveError expected) {
+    unsigned char record[RECORD_LENGTH];
+    unsigned char key[255];
+    memset(key, 0, sizeof(key));
+    strcpy(reinterpret_cast<char *>(key + 30), module);
+    DWORD length = sizeof(record);
+    EXPECT_EQ(btrcall(operation, posBlock, record, &length, key, 255, 0),
+              expected)
+        << "op " << operation;
+    return expected == BtrieveError::Success
+               ? std::string(reinterpret_cast<char *>(record + 30))
+               : std::string();
+  }
+
+  // An empty leading string must not hide the second segment: records sort
+  // by it, and range queries starting below it find them.
+  void expectOrderedBySecondSegment() {
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireFirst, "",
+                  BtrieveError::Success),
+              "SNMYTIME");
+    EXPECT_EQ(
+        get(btrieve::OperationCode::AcquireNext, "", BtrieveError::Success),
+        "WORMSG");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireGreater, "A",
+                  BtrieveError::Success),
+              "SNMYTIME");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireEqual, "WORMSG",
+                  BtrieveError::Success),
+              "WORMSG");
+    EXPECT_EQ(
+        get(btrieve::OperationCode::AcquireLast, "", BtrieveError::Success),
+        "WORMSG");
+  }
+};
+
+TEST_F(CompositeEmptyLeadingStringTest, OrdersBySecondSegment) {
+  std::filesystem::path path(tempPath->getTempPath());
+  path /= L"gen.dat";
+
+  ASSERT_EQ(create(path, true), BtrieveError::Success);
+  // inserted out of key order on purpose
+  ASSERT_EQ(insert("WORMSG"), BtrieveError::Success);
+  ASSERT_EQ(insert("SNMYTIME"), BtrieveError::Success);
+
+  expectOrderedBySecondSegment();
+}
+
+// The Major BBS keeps the record length in a 16-bit variable and passes its
+// address as the 32-bit data length (DFAAPI.C btvu: `(ULONG*)&rlen`), so the
+// high word holds whatever was next to it. Btrieve 6.15 uses only the low
+// word; so must we, or an Insert reads (and stores) megabytes of garbage.
+TEST_F(wbtrv32Test, DataLengthUsesOnlyLowWord) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  DWORD dwDataBufferLength = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  // big enough that reading the full 32-bit length stays in bounds
+  std::vector<uint8_t> buffer(0x20000);
+  auto *record = reinterpret_cast<LPRECORD>(buffer.data());
+  uint8_t key[255];
+
+  // a junk high word must not make a too-small buffer look big enough
+  dwDataBufferLength = 0x00010000 | 10;
+  EXPECT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, record,
+                    &dwDataBufferLength, key, 255, 0),
+            btrieve::BtrieveError::DataBufferLengthOverrun);
+
+  // an insert stores exactly the low-word length
+  dwDataBufferLength = sizeof(RECORD);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, record,
+                    &dwDataBufferLength, key, 255, 0),
+            btrieve::BtrieveError::Success);
+  strcpy(record->string1, "LowWord");
+  record->int1 = 424242;
+  record->int2 = 0;  // autoincrement
+
+  dwDataBufferLength = 0x00010000 | sizeof(RECORD);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Insert, posBlock, record,
+                    &dwDataBufferLength, key, 255, -1),
+            btrieve::BtrieveError::Success);
+
+  uint32_t intKey = 424242;
+  dwDataBufferLength = 4096;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireEqual, posBlock, record,
+                    &dwDataBufferLength, &intKey, 255, 1),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(dwDataBufferLength, sizeof(RECORD));
+  EXPECT_STREQ(record->string1, "LowWord");
+}
+
+// Btrieve hands back the stored record on Insert, including any
+// autoincrement value it assigned, so callers can read the new id from their
+// own buffer (and Update the record next without "changing" that key).
+TEST_F(wbtrv32Test, InsertReturnsAssignedAutoincrementValue) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  DWORD dwDataBufferLength = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr,
+                    &dwDataBufferLength,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  RECORD record;
+  memset(&record, 0, sizeof(record));
+  strcpy(record.string1, "AutoInc");
+  record.int1 = 515151;
+  record.int2 = 0;  // key 3: autoincrement, assigned on insert
+
+  dwDataBufferLength = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Insert, posBlock, &record,
+                    &dwDataBufferLength, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+
+  // the asset holds autoincrement values 1-4
+  EXPECT_EQ(record.int2, 5);
+
+  dwDataBufferLength = sizeof(record);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::Update, posBlock, &record,
+                    &dwDataBufferLength, nullptr, 0, -1),
+            btrieve::BtrieveError::Success);
+}
+
+// Shaped like The Major BBS GALFMSG2.DAT key 1: unsigned binary segments of 2
+// and 4 bytes. Btrieve orders them numerically; a bytewise compare of the raw
+// little-endian bytes would put 0x100 before 0xFF.
+class CompositeIntegerKeyTest : public wbtrv32Test {
+ protected:
+#pragma pack(push, 1)
+  struct Msg {
+    uint16_t forum;
+    uint32_t id;
+    char text[10];
+  };
+#pragma pack(pop)
+
+  BtrieveError create(const std::filesystem::path &path) {
+    unsigned char buffer[256];
+    memset(buffer, 0, sizeof(buffer));
+
+    auto lpFileSpec = reinterpret_cast<wbtrv32::LPFILESPEC>(buffer);
+    lpFileSpec->pageSize = 4096;
+    lpFileSpec->numberOfKeys = 1;
+    lpFileSpec->logicalFixedRecordLength = sizeof(Msg);
+    lpFileSpec->fileVersion = 0x60;
+
+    // unique and non-modifiable, like the key it is shaped after
+    auto lpKeySpec = reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
+    lpKeySpec[0].position = 1;
+    lpKeySpec[0].length = 2;
+    lpKeySpec[0].attributes = UseExtendedDataType | SegmentedKey;
+    lpKeySpec[0].extendedDataType = btrieve::KeyDataType::UnsignedBinary;
+    lpKeySpec[1].position = 3;
+    lpKeySpec[1].length = 4;
+    lpKeySpec[1].attributes = UseExtendedDataType;
+    lpKeySpec[1].extendedDataType = btrieve::KeyDataType::UnsignedBinary;
+
+    DWORD length = reinterpret_cast<unsigned char *>(lpKeySpec + 2) - buffer;
+    return static_cast<BtrieveError>(
+        btrcall(btrieve::OperationCode::Create, posBlock, buffer, &length,
+                const_cast<char *>(toStdString(path).c_str()), -1, 0));
+  }
+
+  BtrieveError open(const std::filesystem::path &path) {
+    DWORD length = 0;
+    return static_cast<BtrieveError>(
+        btrcall(btrieve::OperationCode::Open, posBlock, nullptr, &length,
+                const_cast<char *>(toStdString(path).c_str()), -1, 0));
+  }
+
+  BtrieveError insert(uint16_t forum, uint32_t id) {
+    Msg msg = {forum, id, "x"};
+    DWORD length = sizeof(msg);
+    return static_cast<BtrieveError>(btrcall(
+        btrieve::OperationCode::Insert, posBlock, &msg, &length, nullptr, 0, -1));
+  }
+
+  // runs a keyed operation and returns "forum:id" of the record found
+  std::string get(WORD operation, uint16_t forum, uint32_t id) {
+    Msg msg;
+    uint8_t key[255];
+    memcpy(key, &forum, 2);
+    memcpy(key + 2, &id, 4);
+    DWORD length = sizeof(msg);
+    int status = btrcall(operation, posBlock, &msg, &length, key, 255, 0);
+    if (status != 0) {
+      return "status " + std::to_string(status);
+    }
+    return std::to_string(msg.forum) + ":" + std::to_string(msg.id);
+  }
+
+  void insertAll() {
+    // deliberately out of order, with values on both sides of byte carries
+    ASSERT_EQ(insert(2, 0x100), BtrieveError::Success);
+    ASSERT_EQ(insert(0x100, 1), BtrieveError::Success);
+    ASSERT_EQ(insert(2, 0xFF), BtrieveError::Success);
+    ASSERT_EQ(insert(0xFF, 0x10000), BtrieveError::Success);
+  }
+
+  void expectNumericOrder() {
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireFirst, 0, 0), "2:255");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireNext, 0, 0), "2:256");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireNext, 0, 0), "255:65536");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireNext, 0, 0), "256:1");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireGreater, 2, 0xFF), "2:256");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireLess, 0x100, 0),
+              "255:65536");
+    EXPECT_EQ(get(btrieve::OperationCode::AcquireEqual, 2, 0x100), "2:256");
+  }
+};
+
+TEST_F(CompositeIntegerKeyTest, OrdersNumerically) {
+  std::filesystem::path path(tempPath->getTempPath());
+  path /= L"msg.dat";
+
+  ASSERT_EQ(create(path), BtrieveError::Success);
+  ASSERT_EQ(open(path), BtrieveError::Success);
+  insertAll();
+  expectNumericOrder();
+}
+
+// Shaped like The Major BBS GALALS2.DAT key 2: a single 17-byte zstring with
+// duplicates and no null attribute, where many records hold an empty string.
+// Btrieve indexes those as "", so range queries must find them.
+TEST_F(wbtrv32Test, EmptyStringKeysAreIndexed) {
+  unsigned char buffer[256];
+  memset(buffer, 0, sizeof(buffer));
+  auto lpFileSpec = reinterpret_cast<wbtrv32::LPFILESPEC>(buffer);
+  lpFileSpec->pageSize = 4096;
+  lpFileSpec->numberOfKeys = 1;
+  lpFileSpec->logicalFixedRecordLength = 20;
+  lpFileSpec->fileVersion = 0x60;
+  lpFileSpec->physicalPageSize = 0xFF;  // in memory
+  auto lpKeySpec = reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
+  lpKeySpec->position = 1;
+  lpKeySpec->length = 17;
+  lpKeySpec->attributes = UseExtendedDataType | Duplicates | Modifiable;
+  lpKeySpec->extendedDataType = btrieve::KeyDataType::Zstring;
+
+  std::filesystem::path path(tempPath->getTempPath());
+  path /= L"alias.dat";
+  DWORD length = reinterpret_cast<unsigned char *>(lpKeySpec + 1) - buffer;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Create, posBlock, buffer, &length,
+                    const_cast<char *>(toStdString(path).c_str()), -1, 0),
+            btrieve::BtrieveError::Success);
+
+  for (const char *alias : {"", "HIMMEY", ""}) {
+    char record[20] = {0};
+    strcpy(record, alias);
+    length = sizeof(record);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::Insert, posBlock, record,
+                      &length, nullptr, 0, -1),
+              btrieve::BtrieveError::Success);
+  }
+
+  auto get = [&](WORD operation, const char *key) {
+    char record[20];
+    char keyBuffer[255] = {0};
+    strcpy(keyBuffer, key);
+    DWORD length = sizeof(record);
+    int status =
+        btrcall(operation, posBlock, record, &length, keyBuffer, 255, 0);
+    return status == 0 ? "'" + std::string(record) + "'"
+                       : "status " + std::to_string(status);
+  };
+
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireFirst, ""), "''");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireLast, ""), "'HIMMEY'");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireEqual, ""), "''");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireLessOrEqual, ""), "''");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireGreaterOrEqual, ""), "''");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireLess, "A"), "''");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireGreater, ""), "'HIMMEY'");
+  EXPECT_EQ(get(btrieve::OperationCode::AcquireLess, ""), "status 9");
+}
+
+// Databases written before schema version 4 stored those empty keys as NULL.
+TEST_F(wbtrv32Test, UpgradeIndexesEmptyStringKeys) {
+  unsigned char buffer[256];
+  memset(buffer, 0, sizeof(buffer));
+  auto lpFileSpec = reinterpret_cast<wbtrv32::LPFILESPEC>(buffer);
+  lpFileSpec->pageSize = 4096;
+  lpFileSpec->numberOfKeys = 1;
+  lpFileSpec->logicalFixedRecordLength = 20;
+  lpFileSpec->fileVersion = 0x60;
+  auto lpKeySpec = reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
+  lpKeySpec->position = 1;
+  lpKeySpec->length = 17;
+  lpKeySpec->attributes = UseExtendedDataType | Duplicates | Modifiable;
+  lpKeySpec->extendedDataType = btrieve::KeyDataType::Zstring;
+
+  std::filesystem::path path(tempPath->getTempPath());
+  path /= L"alias.dat";
+  std::filesystem::path dbPath(path);
+  dbPath.replace_extension(L".db");
+  DWORD length = reinterpret_cast<unsigned char *>(lpKeySpec + 1) - buffer;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Create, posBlock, buffer, &length,
+                    const_cast<char *>(toStdString(path).c_str()), -1, 0),
+            btrieve::BtrieveError::Success);
+  length = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, &length,
+                    const_cast<char *>(toStdString(path).c_str()), -1, 0),
+            btrieve::BtrieveError::Success);
+  for (const char *alias : {"", "HIMMEY", ""}) {
+    char record[20] = {0};
+    strcpy(record, alias);
+    length = sizeof(record);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::Insert, posBlock, record,
+                      &length, nullptr, 0, -1),
+              btrieve::BtrieveError::Success);
+  }
+  length = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Close, posBlock, nullptr, &length,
+                    nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+
+  {
+    sqlite3 *db;
+    ASSERT_EQ(sqlite3_open_v2(toStdString(dbPath).c_str(), &db,
+                              SQLITE_OPEN_READWRITE, nullptr),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db,
+                           "UPDATE data_t SET key_0 = NULL WHERE key_0 = ''; "
+                           "UPDATE metadata_t SET version = 3;",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(db);
+  }
+
+  length = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, &length,
+                    const_cast<char *>(toStdString(path).c_str()), -1, 0),
+            btrieve::BtrieveError::Success);
+
+  char record[20];
+  char key[255] = {0};
+  length = sizeof(record);
+  EXPECT_EQ(btrcall(btrieve::OperationCode::AcquireLessOrEqual, posBlock,
+                    record, &length, key, 255, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_STREQ(record, "");
+  length = sizeof(record);
+  memset(key, 0, sizeof(key));
+  EXPECT_EQ(btrcall(btrieve::OperationCode::AcquireGreaterOrEqual, posBlock,
+                    record, &length, key, 255, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_STREQ(record, "");
+}
+
+// GetDirect makes the record it reads the current one, so a following
+// GetPosition reports that record (The Major BBS forums: Insert a message,
+// GetDirect an older one, GetPosition, later GetDirect + Update with that
+// position -- a stale position there rewrote the inserted message).
+TEST_F(wbtrv32Test, GetPositionAfterGetDirectReportsRecordRead) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  DWORD length = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, &length,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  for (int keyNumber : {0, -1}) {
+    RECORD record;
+    uint8_t key[255];
+    uint32_t first;
+    length = sizeof(record);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::AcquireFirst, posBlock, &record,
+                      &length, key, 255, 1),
+              btrieve::BtrieveError::Success);
+    length = sizeof(first);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &first,
+                      &length, nullptr, 0, 0),
+              btrieve::BtrieveError::Success);
+
+    // an insert moves currency to the new record
+    memset(&record, 0, sizeof(record));
+    strcpy(record.string1, "New");
+    record.int1 = 600000 + keyNumber;
+    length = sizeof(record);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::Insert, posBlock, &record,
+                      &length, key, 255, 0),
+              btrieve::BtrieveError::Success);
+
+    memcpy(&record, &first, sizeof(first));
+    length = sizeof(record);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::GetDirectChunkOrRecord,
+                      posBlock, &record, &length, key, 255,
+                      static_cast<CHAR>(keyNumber)),
+              btrieve::BtrieveError::Success);
+
+    uint32_t after = 0;
+    length = sizeof(after);
+    ASSERT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &after,
+                      &length, nullptr, 0, 0),
+              btrieve::BtrieveError::Success);
+    EXPECT_EQ(after, first) << "GetDirect with key " << keyNumber;
+  }
+}
+
+// When the data buffer is too short (status 22), Btrieve 6.15 still makes the
+// record current for Step and GetDirect, so GetPosition reports it and a
+// following StepNext continues after it. The Major BBS relies on this when
+// it walks WGSGEN2.DAT, whose first record can exceed its 8192-byte buffer.
+TEST_F(wbtrv32Test, BufferTooShortStillPositionsOnRecord) {
+  auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_FALSE(mbbsEmuDb.empty());
+
+  DWORD length = 0;
+  ASSERT_EQ(btrcall(btrieve::OperationCode::Open, posBlock, nullptr, &length,
+                    const_cast<LPVOID>(reinterpret_cast<LPCVOID>(
+                        toStdString(mbbsEmuDb.c_str()).c_str())),
+                    -1, 0),
+            btrieve::BtrieveError::Success);
+
+  RECORD record;
+  uint32_t position;
+  auto currentPosition = [&]() {
+    uint32_t p = 0;
+    DWORD l = sizeof(p);
+    EXPECT_EQ(btrcall(btrieve::OperationCode::GetPosition, posBlock, &p, &l,
+                      nullptr, 0, 0),
+              btrieve::BtrieveError::Success);
+    return p;
+  };
+
+  length = 10;
+  EXPECT_EQ(btrcall(btrieve::OperationCode::StepFirst, posBlock, &record,
+                    &length, nullptr, 0, 0),
+            btrieve::BtrieveError::DataBufferLengthOverrun);
+  EXPECT_EQ(currentPosition(), 1u);
+
+  length = sizeof(record);
+  ASSERT_EQ(btrcall(btrieve::OperationCode::StepNext, posBlock, &record,
+                    &length, nullptr, 0, 0),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(currentPosition(), 2u);
+
+  length = 10;
+  EXPECT_EQ(btrcall(btrieve::OperationCode::StepNext, posBlock, &record,
+                    &length, nullptr, 0, 0),
+            btrieve::BtrieveError::DataBufferLengthOverrun);
+  EXPECT_EQ(currentPosition(), 3u);
+
+  position = 1;
+  memcpy(&record, &position, sizeof(position));
+  length = 10;
+  EXPECT_EQ(btrcall(btrieve::OperationCode::GetDirectChunkOrRecord, posBlock,
+                    &record, &length, nullptr, 0, -1),
+            btrieve::BtrieveError::DataBufferLengthOverrun);
+  EXPECT_EQ(currentPosition(), 1u);
+}
+
+// Transactions span every file written until End or Abort. Each test closes
+// what it opens and finishes its transaction, since transaction state lives
+// for as long as the DLL is loaded.
+class wbtrv32TransactionTest : public wbtrv32Test {
+ protected:
+  // a second copy of MBBSEMU.DB, for transactions across files; call it
+  // before copying MBBSEMU.DB itself, which it passes through
+  std::basic_string<wchar_t> copyOtherDb() {
+    auto copy = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+    std::filesystem::path other(copy);
+    other.replace_filename("MBBSEMU2.DB");
+    std::filesystem::rename(copy, other);
+    return other.wstring();
+  }
+
+  int open(void *block, const std::basic_string<wchar_t> &path) {
+    std::string name = toStdString(path.c_str());
+    return btrcall(btrieve::OperationCode::Open, block, nullptr, nullptr,
+                   const_cast<char *>(name.c_str()), -1, 0);
+  }
+
+  int close(void *block) {
+    return btrcall(btrieve::OperationCode::Close, block, nullptr, nullptr,
+                   nullptr, 0, 0);
+  }
+
+  int operation(WORD op) {
+    return btrcall(op, nullptr, nullptr, nullptr, nullptr, 0, 0);
+  }
+
+  unsigned int recordCount(void *block) {
+    char buffer[80];
+    DWORD length = sizeof(buffer);
+    EXPECT_EQ(btrcall(btrieve::OperationCode::Stat, block, buffer, &length,
+                      nullptr, 0, 0),
+              btrieve::BtrieveError::Success);
+    return reinterpret_cast<wbtrv32::LPFILESPEC>(buffer)->recordCount;
+  }
+
+  // the record count as a fresh open sees it
+  unsigned int recordCountOnDisk(const std::basic_string<wchar_t> &path) {
+    uint8_t block[POSBLOCK_LENGTH] = {};
+    EXPECT_EQ(open(block, path), btrieve::BtrieveError::Success);
+    unsigned int count = recordCount(block);
+    EXPECT_EQ(close(block), btrieve::BtrieveError::Success);
+    return count;
+  }
+
+  int deleteFirst(void *block) {
+    RECORD record;
+    DWORD length = sizeof(record);
+    EXPECT_EQ(btrcall(btrieve::OperationCode::StepFirst, block, &record,
+                      &length, nullptr, 0, 0),
+              btrieve::BtrieveError::Success);
+    return btrcall(btrieve::OperationCode::Delete, block, nullptr, nullptr,
+                   nullptr, 0, 0);
+  }
+
+  int insert(void *block, int32_t int1) {
+    RECORD record = {};
+    record.int1 = int1;
+    record.int2 = int1;
+    strcpy(record.string1, "Sysop");
+    snprintf(record.string2, sizeof(record.string2), "%d", int1);
+    DWORD length = sizeof(record);
+    return btrcall(btrieve::OperationCode::Insert, block, &record, &length,
+                   nullptr, 0, -1);
+  }
+};
+
+TEST_F(wbtrv32TransactionTest, AbortDiscardsWritesToEveryFile) {
+  auto second = copyOtherDb();
+  auto first = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  uint8_t block2[POSBLOCK_LENGTH] = {};
+  ASSERT_EQ(open(posBlock, first), btrieve::BtrieveError::Success);
+  ASSERT_EQ(open(block2, second), btrieve::BtrieveError::Success);
+
+  // with a lock bias, as The Major BBS sends it (dfaBegTrans)
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction + 100),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(deleteFirst(posBlock), btrieve::BtrieveError::Success);
+  ASSERT_EQ(insert(block2, 10000), btrieve::BtrieveError::Success);
+  // reads in the transaction see its writes
+  EXPECT_EQ(recordCount(posBlock), 3u);
+  EXPECT_EQ(recordCount(block2), 5u);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::AbortTransaction),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCount(posBlock), 4u);
+  EXPECT_EQ(recordCount(block2), 4u);
+
+  ASSERT_EQ(close(block2), btrieve::BtrieveError::Success);
+  ASSERT_EQ(close(posBlock), btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCountOnDisk(first), 4u);
+  EXPECT_EQ(recordCountOnDisk(second), 4u);
+}
+
+TEST_F(wbtrv32TransactionTest, EndKeepsWritesToEveryFile) {
+  auto second = copyOtherDb();
+  auto first = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  uint8_t block2[POSBLOCK_LENGTH] = {};
+  ASSERT_EQ(open(posBlock, first), btrieve::BtrieveError::Success);
+  ASSERT_EQ(open(block2, second), btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(deleteFirst(posBlock), btrieve::BtrieveError::Success);
+  ASSERT_EQ(insert(block2, 10000), btrieve::BtrieveError::Success);
+  ASSERT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(close(block2), btrieve::BtrieveError::Success);
+  ASSERT_EQ(close(posBlock), btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCountOnDisk(first), 3u);
+  EXPECT_EQ(recordCountOnDisk(second), 5u);
+}
+
+TEST_F(wbtrv32TransactionTest, StatusCodes) {
+  EXPECT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::NoTransactionActive);
+  EXPECT_EQ(operation(btrieve::OperationCode::AbortTransaction),
+            btrieve::BtrieveError::NoTransactionActive);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction + 200),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+            btrieve::BtrieveError::TransactionIsActive);
+  // a transaction with no writes
+  EXPECT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::NoTransactionActive);
+}
+
+// Concurrent transactions (1019) run as exclusive ones, with or without the
+// +500 no-wait bias and a lock bias.
+TEST_F(wbtrv32TransactionTest, BeginConcurrentTransaction) {
+  for (WORD op : {1019, 1119, 1419, 1519, 1719, 1919}) {
+    SCOPED_TRACE(op);
+    ASSERT_EQ(operation(op), btrieve::BtrieveError::Success);
+    EXPECT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+              btrieve::BtrieveError::TransactionIsActive);
+    EXPECT_EQ(operation(btrieve::OperationCode::AbortTransaction),
+              btrieve::BtrieveError::Success);
+  }
+
+  EXPECT_EQ(operation(1019 + 50), btrieve::BtrieveError::InvalidOperation);
+}
+
+// A write that fails inside a transaction undoes only itself.
+TEST_F(wbtrv32TransactionTest, FailedWriteKeepsTheRestOfTheTransaction) {
+  auto db = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_EQ(open(posBlock, db), btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(insert(posBlock, 10000), btrieve::BtrieveError::Success);
+  // 3444 is already in the file under a unique key
+  ASSERT_EQ(insert(posBlock, 3444), btrieve::BtrieveError::DuplicateKeyValue);
+  ASSERT_EQ(insert(posBlock, 10001), btrieve::BtrieveError::Success);
+  ASSERT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(close(posBlock), btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCountOnDisk(db), 6u);
+}
+
+// Closing a file mid-transaction leaves its writes in the transaction, and
+// reopening it then works with the same connection.
+TEST_F(wbtrv32TransactionTest, CloseAndReopenDuringTransaction) {
+  auto db = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_EQ(open(posBlock, db), btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(deleteFirst(posBlock), btrieve::BtrieveError::Success);
+  ASSERT_EQ(close(posBlock), btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(open(posBlock, db), btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCount(posBlock), 3u);
+  ASSERT_EQ(insert(posBlock, 10000), btrieve::BtrieveError::Success);
+  ASSERT_EQ(close(posBlock), btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::AbortTransaction),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCountOnDisk(db), 4u);
+
+  ASSERT_EQ(open(posBlock, db), btrieve::BtrieveError::Success);
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(deleteFirst(posBlock), btrieve::BtrieveError::Success);
+  ASSERT_EQ(close(posBlock), btrieve::BtrieveError::Success);
+  ASSERT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::Success);
+  EXPECT_EQ(recordCountOnDisk(db), 3u);
+}
+
+TEST_F(wbtrv32TransactionTest, StopAbortsTransaction) {
+  auto db = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  ASSERT_EQ(open(posBlock, db), btrieve::BtrieveError::Success);
+
+  ASSERT_EQ(operation(btrieve::OperationCode::BeginTransaction),
+            btrieve::BtrieveError::Success);
+  ASSERT_EQ(deleteFirst(posBlock), btrieve::BtrieveError::Success);
+  ASSERT_EQ(operation(btrieve::OperationCode::Stop),
+            btrieve::BtrieveError::Success);
+  memset(posBlock, 0, sizeof(posBlock));
+
+  EXPECT_EQ(recordCountOnDisk(db), 4u);
+  EXPECT_EQ(operation(btrieve::OperationCode::EndTransaction),
+            btrieve::BtrieveError::NoTransactionActive);
 }

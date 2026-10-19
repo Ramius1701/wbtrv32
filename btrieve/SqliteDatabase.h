@@ -61,6 +61,7 @@ class SqliteDatabase : public SqlDatabase {
   virtual BtrieveError deleteRecord() override;
 
   virtual unsigned int getRecordCount() const override;
+  virtual unsigned int getUniqueKeyCount(const Key &key) const override;
 
   virtual BtrieveError deleteAll() override;
 
@@ -94,14 +95,17 @@ class SqliteDatabase : public SqlDatabase {
 
   void createSqliteMetadataTable(const BtrieveDatabase &database);
   void createSqliteKeysTable(const BtrieveDatabase &database);
-  void createSqliteDataTable(const BtrieveDatabase &database);
-  void createSqliteDataIndices(const BtrieveDatabase &database);
-  void createSqliteTriggers(const BtrieveDatabase &database);
+  // the data, index and trigger creation use keys, so set it first
+  void createSqliteDataTable(const char *table);
+  void createSqliteDataIndices();
+  void createSqliteTriggers();
 
   void initializeConnection();
-  void loadSqliteMetadata(const wchar_t *filename, unsigned int openFlags);
+  uint32_t loadSqliteMetadata();
   void loadSqliteKeys();
 
+  BtrieveError getByKeyRange(Query *query, const char *opurator, bool reverse,
+                             CursorDirection cursorDirection);
   BtrieveError getByKeyGreater(Query *query, const char *opurator);
   virtual BtrieveError getByKeyGreater(Query *query) override {
     return getByKeyGreater(query, ">");
@@ -130,11 +134,8 @@ class SqliteDatabase : public SqlDatabase {
 
   BtrieveError nextReader(Query *query, CursorDirection cursorDirection);
 
-  void upgradeDatabaseFromVersion(uint32_t currentVersion,
-                                  const wchar_t *filename,
-                                  unsigned int openFlags);
-
   void upgradeDatabaseFrom2To3();
+  void upgradeDatabaseFrom3To4();
 
   unsigned int openFlags;
   mutable std::unordered_map<std::string, SqlitePreparedStatement>

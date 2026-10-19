@@ -37,6 +37,10 @@ class BtrieveDriver {
 
   unsigned int getRecordCount() const { return sqlDatabase->getRecordCount(); }
 
+  unsigned int getUniqueKeyCount(const Key &key) const {
+    return sqlDatabase->getUniqueKeyCount(key);
+  }
+
   bool isVariableLengthRecords() const {
     return sqlDatabase->isVariableLengthRecords();
   }
@@ -48,6 +52,8 @@ class BtrieveDriver {
   void setPosition(unsigned int position) {
     return sqlDatabase->setPosition(position);
   }
+
+  bool hasCurrentRecord() const { return sqlDatabase->hasCurrentRecord(); }
 
   std::pair<bool, Record> getRecord() { return getRecord(getPosition()); }
 
@@ -79,6 +85,10 @@ class BtrieveDriver {
     return ret;
   }
 
+  // Forgets the logical position, so Get Next/Previous fail until a Get
+  // establishes a new one.
+  void clearLogicalCurrency() { previousQuery.reset(); }
+
   std::basic_string<wchar_t> getOpenedFilename() { return openedFilename; }
 
   // Btrieve keeps a position (and key path) per open handle, not per file.
@@ -87,6 +97,7 @@ class BtrieveDriver {
   // previous handle's state out and this one's in.
   struct Cursor {
     unsigned int position = 0;
+    bool currentRecord = false;
     std::unique_ptr<Query> query;
   };
 
@@ -96,9 +107,13 @@ class BtrieveDriver {
     }
     if (activeCursor != nullptr) {
       activeCursor->position = sqlDatabase->getPosition();
+      activeCursor->currentRecord = sqlDatabase->hasCurrentRecord();
       activeCursor->query = std::move(previousQuery);
     }
     sqlDatabase->setPosition(cursor != nullptr ? cursor->position : 0);
+    if (cursor == nullptr || !cursor->currentRecord) {
+      sqlDatabase->clearCurrentRecord();
+    }
     previousQuery =
         cursor != nullptr ? std::move(cursor->query) : std::unique_ptr<Query>();
     activeCursor = cursor;

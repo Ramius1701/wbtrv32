@@ -78,17 +78,10 @@ static std::unordered_map<std::basic_string<wchar_t>, OpenHandle> _openFiles;
 static const OpenHandle *findHandle(LPVOID lpPositionBlock);
 
 #ifdef LOG_TO_FILE
-namespace {
-struct FileCloser {
-  void operator()(FILE *f) const {
-    if (f) {
-      fclose(f);
-    }
-  }
-};
-}  // namespace
-
-static std::unique_ptr<FILE, FileCloser> _logFile(nullptr);
+// A plain pointer, closed only by processDetach(): a static object with a
+// destructor would be destroyed at exit before the Linux .so destructor below
+// runs processDetach(), which would then close the log a second time.
+static FILE *_logFile = nullptr;
 #endif
 
 static int readLogLevel() {
@@ -133,7 +126,7 @@ static void writeLogTimestamp() {
 #endif
   char stamp[32];
   size_t len = strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S ", &local);
-  fwrite(stamp, 1, len, _logFile.get());
+  fwrite(stamp, 1, len, _logFile);
 }
 
 static void writeVersionStamp() {
@@ -152,10 +145,10 @@ static void writeVersionStamp() {
   }
 #endif
   writeLogTimestamp();
-  fprintf(_logFile.get(),
+  fprintf(_logFile,
           "wbtrv32 %s (built %s %s) %s loaded by %s, log level %d\r\n",
           WBTRV32_VERSION, __DATE__, __TIME__, library, program, _logLevel);
-  fflush(_logFile.get());
+  fflush(_logFile);
 }
 #endif  // LOG_TO_FILE
 
@@ -189,9 +182,9 @@ void wbtrv32::processAttach() {
     return;
   }
 #ifdef WIN32
-  _logFile.reset(_wfsopen(L"wbtrv32.log", L"ab", _SH_DENYWR));
+  _logFile = _wfsopen(L"wbtrv32.log", L"ab", _SH_DENYWR);
 #else
-  _logFile.reset(fopen("/tmp/wbtrv32.log", "ab"));
+  _logFile = fopen("/tmp/wbtrv32.log", "ab");
 #endif  // WIN32
   writeVersionStamp();
 #endif  // LOG_TO_FILE
@@ -199,7 +192,10 @@ void wbtrv32::processAttach() {
 
 void wbtrv32::processDetach() {
 #ifdef LOG_TO_FILE
-  _logFile.reset(nullptr);
+  if (_logFile) {
+    fclose(_logFile);
+    _logFile = nullptr;
+  }
 #endif
 }
 
@@ -257,7 +253,7 @@ static void debug(const BtrieveCommand &command, const char *format, ...) {
 
 #ifdef LOG_TO_FILE
     if (_logFile) {
-      fwrite(buf, 1, len, _logFile.get());
+      fwrite(buf, 1, len, _logFile);
     }
 #endif
   }
@@ -284,8 +280,8 @@ static void debug(const BtrieveCommand &command, const char *format, ...) {
 
 #ifdef LOG_TO_FILE
   if (_logFile) {
-    fwrite(buf, 1, len + 2, _logFile.get());
-    fflush(_logFile.get());
+    fwrite(buf, 1, len + 2, _logFile);
+    fflush(_logFile);
   }
 #endif
 }
@@ -515,6 +511,19 @@ static BtrieveError Close(BtrieveCommand &command) {
   return BtrieveError::Success;
 }
 
+// The index of segment's ACS in acsDefinitions, or acsDefinitions.size() if
+// it is not there.
+static size_t acsNumber(const std::vector<const KeyDefinition *> &acsDefinitions,
+                        const KeyDefinition &segment) {
+  for (size_t i = 0; i < acsDefinitions.size(); ++i) {
+    if (!strcmp(acsDefinitions[i]->getACSName(), segment.getACSName()) &&
+        !memcmp(acsDefinitions[i]->getACS(), segment.getACS(), ACS_LENGTH)) {
+      return i;
+    }
+  }
+  return acsDefinitions.size();
+}
+
 static BtrieveError Stat(BtrieveCommand &command) {
   auto btrieveDriver = getOpenDatabase(command.lpPositionBlock);
   if (btrieveDriver == nullptr) {
@@ -530,13 +539,23 @@ static BtrieveError Stat(BtrieveCommand &command) {
   }
 
   size_t totalKeysIncludingSegmentedKeys = 0;
+  // the distinct ACS tables, which follow the key specs, numbered in the
+  // order the keys first use them
+  std::vector<const KeyDefinition *> acsDefinitions;
   for (const auto &key : btrieveDriver->getKeys()) {
     totalKeysIncludingSegmentedKeys += key.getSegments().size();
+    for (const auto &segment : key.getSegments()) {
+      if (segment.requiresACS() &&
+          acsNumber(acsDefinitions, segment) == acsDefinitions.size()) {
+        acsDefinitions.push_back(&segment);
+      }
+    }
   }
 
   const unsigned int requiredSize = static_cast<unsigned int>(
       sizeof(wbtrv32::FILESPEC) +
-      (totalKeysIncludingSegmentedKeys * sizeof(wbtrv32::KEYSPEC)));
+      (totalKeysIncludingSegmentedKeys * sizeof(wbtrv32::KEYSPEC)) +
+      (acsDefinitions.size() * sizeof(wbtrv32::ACSCREATEDATA)));
   if (*command.lpdwDataBufferLength < requiredSize) {
     return BtrieveError::DataBufferLengthOverrun;
   }
@@ -567,20 +586,35 @@ static BtrieveError Stat(BtrieveCommand &command) {
       reinterpret_cast<wbtrv32::LPKEYSPEC>(lpFileSpec + 1);
   uint8_t keyNumber = 0;
   for (const auto &key : btrieveDriver->getKeys()) {
+    const unsigned int uniqueKeys = btrieveDriver->getUniqueKeyCount(key);
     for (const auto &segment : key.getSegments()) {
       lpKeySpec->position = segment.getPosition();
       lpKeySpec->length = segment.getLength();
       lpKeySpec->attributes = segment.getAttributes();
-      lpKeySpec->uniqueKeys = btrieveDriver->getRecordCount();
+      lpKeySpec->uniqueKeys = uniqueKeys;
       lpKeySpec->extendedDataType = segment.getDataType();
       lpKeySpec->nullValue = segment.getNullValue();
       lpKeySpec->reserved = 0;
       lpKeySpec->number = keyNumber;
-      lpKeySpec->acsNumber = 0;
+      lpKeySpec->acsNumber =
+          segment.requiresACS()
+              ? static_cast<uint8_t>(acsNumber(acsDefinitions, segment))
+              : 0;
       ++lpKeySpec;
     }
 
     ++keyNumber;
+  }
+
+  wbtrv32::LPACSCREATEDATA lpAcsData =
+      reinterpret_cast<wbtrv32::LPACSCREATEDATA>(lpKeySpec);
+  for (const KeyDefinition *definition : acsDefinitions) {
+    lpAcsData->header = 0xAC;
+    memset(lpAcsData->name, 0, sizeof(lpAcsData->name));
+    memcpy(lpAcsData->name, definition->getACSName(),
+           std::min(strlen(definition->getACSName()), sizeof(lpAcsData->name)));
+    memcpy(lpAcsData->acs, definition->getACS(), ACS_LENGTH);
+    ++lpAcsData;
   }
 
   return BtrieveError::Success;
@@ -615,8 +649,8 @@ static BtrieveError Step(BtrieveCommand &command) {
     return BtrieveError::IOError;
   }
 
+  // Btrieve keeps the record current even when it does not fit
   if (*command.lpdwDataBufferLength < record.second.getData().size()) {
-    btrieveDriver->setPosition(oldPosition);
     return BtrieveError::DataBufferLengthOverrun;
   }
 
@@ -632,6 +666,11 @@ static BtrieveError GetPosition(BtrieveCommand &command) {
   auto btrieveDriver = getOpenDatabase(command.lpPositionBlock);
   if (btrieveDriver == nullptr) {
     return BtrieveError::FileNotOpen;
+  }
+
+  // no record read since Open, or the current one was deleted
+  if (!btrieveDriver->hasCurrentRecord()) {
+    return BtrieveError::InvalidPositioning;
   }
 
   if (*command.lpdwDataBufferLength < sizeof(uint32_t)) {
@@ -651,6 +690,10 @@ static BtrieveError GetDirectRecord(BtrieveCommand &command) {
     return BtrieveError::FileNotOpen;
   }
 
+  // Get Direct replaces any logical currency with that of the key number
+  // passed; key number -1 leaves none
+  btrieveDriver->clearLogicalCurrency();
+
   if (*command.lpdwDataBufferLength < 4) {
     return BtrieveError::DataBufferLengthOverrun;
   }
@@ -662,21 +705,23 @@ static BtrieveError GetDirectRecord(BtrieveCommand &command) {
     return BtrieveError::InvalidRecordAddress;
   }
 
-  if (*command.lpdwDataBufferLength < record.second.getData().size()) {
-    return BtrieveError::DataBufferLengthOverrun;
-  }
-
   if (command.keyNumber >= 0) {
     if (static_cast<uint32_t>(command.keyNumber) >=
         btrieveDriver->getKeys().size()) {
-      return BtrieveError::InvalidKeyNumber;
+      return BtrieveError::InvalidKeyPath;
     }
 
     const auto &key = btrieveDriver->getKeys().at(command.keyNumber);
     if (command.lpKeyBufferLength < key.getLength()) {
       return BtrieveError::KeyBufferTooShort;
     }
+  }
 
+  // the record read becomes the current one (GetPosition, Update, Delete),
+  // even when it does not fit the data buffer
+  btrieveDriver->setPosition(position);
+
+  if (command.keyNumber >= 0) {
     auto error =
         btrieveDriver->logicalCurrencySeek(command.keyNumber, position);
     if (error != BtrieveError::Success) {
@@ -691,6 +736,11 @@ static BtrieveError GetDirectRecord(BtrieveCommand &command) {
                 record.second.getData().size()));
 
     memcpy(command.lpKeyBuffer, keyBytes.data(), keyBytes.size());
+  }
+
+  // logical currency stays established when the record does not fit
+  if (*command.lpdwDataBufferLength < record.second.getData().size()) {
+    return BtrieveError::DataBufferLengthOverrun;
   }
 
   memcpy(command.lpDataBuffer, record.second.getData().data(),
@@ -817,6 +867,17 @@ static BtrieveError Upsert(
   // last set by a Step/Query, which can still be its unset default of 0
   // on a file that hasn't had one yet -- indistinguishable from failure.
   btrieveDriver->setPosition(insertedPosition.second);
+
+  // Btrieve hands the stored record back on Insert, including any
+  // autoincrement values it assigned
+  if (command.operation == OperationCode::Insert) {
+    auto stored = btrieveDriver->getRecord(insertedPosition.second);
+    if (stored.first &&
+        stored.second.getData().size() <= *command.lpdwDataBufferLength) {
+      memcpy(command.lpDataBuffer, stored.second.getData().data(),
+             stored.second.getData().size());
+    }
+  }
 
   if (!keepPositioning) {
     return BtrieveError::Success;
@@ -1643,8 +1704,9 @@ static BtrieveError handle(BtrieveCommand &command) {
       return ::InsertExtended(command);
     case OperationCode::ClearOwner:
       return ::ClearOwner(command);
-    case OperationCode::BeginTransaction:
-    case OperationCode::BeginConcurrentTransaction:
+    CASE_WITH_RECORD_LOCK(OperationCode::BeginTransaction):
+    CASE_WITH_RECORD_LOCK(OperationCode::BeginConcurrentTransaction):
+    CASE_WITH_RECORD_LOCK(OperationCode::BeginConcurrentNoWaitTransaction):
       return ::BeginTransaction(command);
     case OperationCode::EndTransaction:
       return ::EndTransaction(command);
@@ -1670,6 +1732,12 @@ static BtrieveError handle(BtrieveCommand &command) {
 }
 // clang-format on
 
+#if defined(WIN32) && defined(__i386__) && !defined(_MSC_VER)
+// Export the 32-bit stdcall symbol _BTRCALL@28 under its undecorated name,
+// matching wbtrv32.def in the MSVC build; see WBTRV32_EXPORT in framework.h.
+__asm__(".section .drectve\n.ascii \" -export:BTRCALL=BTRCALL@28\"\n.text");
+#endif
+
 extern "C" WBTRV32_EXPORT int __stdcall BTRCALL(WORD wOperation,
                                                 LPVOID lpPositionBlock,
                                                 LPVOID lpDataBuffer,
@@ -1685,6 +1753,13 @@ extern "C" WBTRV32_EXPORT int __stdcall BTRCALL(WORD wOperation,
 
   BtrieveCommand btrieveCommand;
   BtrieveError error;
+
+  // Btrieve 6.15 uses only the low word of the data length. The Major BBS
+  // relies on this: it passes the address of a 16-bit length as the 32-bit
+  // pointer (DFAAPI.C btvu), so the high word is whatever was next to it.
+  if (lpdwDataBufferLength != nullptr) {
+    *lpdwDataBufferLength &= 0xFFFF;
+  }
 
   btrieveCommand.operation = static_cast<OperationCode>(wOperation);
   btrieveCommand.lpPositionBlock = lpPositionBlock;

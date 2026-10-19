@@ -148,6 +148,7 @@ copy /Y $(SolutionDir)..\bin\wbtrv32\$(Platform)\$(Configuration)\wbtrv32.pdb $(
     <ClCompile Include="..\..\btrieve\BtrieveDriver_test.cc" />
     <ClCompile Include="..\..\btrieve\Key_test.cc" />
     <ClCompile Include="..\..\btrieve\LRUCache_test.cc" />
+    <ClCompile Include="..\..\btrieve\SqliteUtil_test.cc" />
     <ClCompile Include="..\..\btrieve\TestBase.cc" />
     <ClCompile Include="..\wbtrv32\bad_data.cc">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</ExcludedFromBuild>
@@ -160,6 +161,17 @@ copy /Y $(SolutionDir)..\bin\wbtrv32\$(Platform)\$(Configuration)\wbtrv32.pdb $(
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="..\..\assets\MBBSEMU.DAT">
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</DeploymentContent>
+      <FileType>Document</FileType>
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</DeploymentContent>
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</DeploymentContent>
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</DeploymentContent>
+      <DestinationFolders Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(OutDir)\assets</DestinationFolders>
+      <DestinationFolders Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(OutDir)\assets</DestinationFolders>
+      <DestinationFolders Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)\assets</DestinationFolders>
+      <DestinationFolders Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)\assets</DestinationFolders>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="..\..\assets\V5SEGKEY.DAT">
       <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</DeploymentContent>
       <FileType>Document</FileType>
       <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</DeploymentContent>

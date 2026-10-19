@@ -21,6 +21,9 @@
     <ClInclude Include="wbtrv32.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="wbtrv32_version.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="wbtrv32.cpp">
@@ -37,5 +40,10 @@
     <None Include="wbtrv32.def">
       <Filter>Source Files</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="wbtrv32.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>

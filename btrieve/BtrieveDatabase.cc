@@ -372,7 +372,23 @@ bool BtrieveDatabase::loadPAT(FILE* f, std::string& acsName,
   uint8_t* pat1 = reinterpret_cast<uint8_t*>(alloca(pageLength * 2));
   uint8_t* pat2 = pat1 + pageLength;  // pat2 is sequentially after pat1
 
-  fseek_s(f, pageLength * 2, SEEK_SET);  // starts on third page
+  // PAT block 1 normally starts on the third page, but stray pages ahead of
+  // it move it along; then it's the pair whose own header says block 1.
+  // Physical page numbers in the PAT move by as much.
+  uint32_t firstPage = 2;
+  const uint32_t physicalPages = fileLength / pageLength;
+  for (uint32_t page = 2; page + 1 < physicalPages; ++page) {
+    fseek_s(f, page * pageLength, SEEK_SET);
+    fread_s(pat1, pageLength * 2, f);
+    if (pat1[0] == 'P' && pat1[1] == 'P' && toUint16(pat1 + 2) == 1 &&
+        pat2[0] == 'P' && pat2[1] == 'P' && toUint16(pat2 + 2) == 1) {
+      firstPage = page;
+      break;
+    }
+  }
+  const uint32_t pageShift = firstPage - 2;
+
+  fseek_s(f, firstPage * pageLength, SEEK_SET);
   fread_s(pat1, pageLength * 2, f);
 
   if (pat1[0] != 'P' || pat1[1] != 'P') {
@@ -402,7 +418,8 @@ bool BtrieveDatabase::loadPAT(FILE* f, std::string& acsName,
     }
 
     if (type == 'A') {
-      loadACSAtPhysicalOffset(f, acsName, acs, pageNumber * pageLength);
+      loadACSAtPhysicalOffset(f, acsName, acs,
+                              (pageNumber + pageShift) * pageLength);
     }
 
     if (type != 0 && type != 'A' && type != 'D' && type != 'E' && type != 'V') {
@@ -517,9 +534,11 @@ void BtrieveDatabase::loadKeyDefinitions(FILE* f, const uint8_t* firstPage,
                                                : KeyDataType::OldAscii;
     }
 
-    // MultipleACS is two bits, so it must match in full: NumberedACS alone
-    // means the key uses the file's single ACS, not a per-key ACS page.
-    if ((attributes & MultipleACS) == MultipleACS) {
+    // MultipleACS (NUMBERED_ACS) is two bits, and NOCASE_KEY reuses one of
+    // them, so a case insensitive key without an ACS has only that bit set. A
+    // null indicator segment ignores the ACS flag, and its 0x400 is DISTINCT.
+    if ((attributes & MultipleACS) == MultipleACS &&
+        dataType != KeyDataType::NullIndicator) {
       uint32_t acsLogicalPage = data[0x19] << 16 | toUint16(data + 0x1A);
       if (!loadACS(f, multiAcsName, multiAcs, acsLogicalPage)) {
         throw BtrieveException(BtrieveError::InvalidACS, "Can't load ACS");
@@ -552,7 +571,11 @@ void BtrieveDatabase::loadKeyDefinitions(FILE* f, const uint8_t* firstPage,
     // If it's a segmented key, don't increment so the next key gets added to
     // the same ordinal as an additional segment
     if (!keyDefinition.isSegment()) {
-      keyOffset = keyOffsets[++currentKeyNumber];
+      ++currentKeyNumber;
+      // v6 has a table of key offsets; v5 has one entry per segment, back to
+      // back, so the next key follows this entry
+      keyOffset = v6 ? keyOffsets[currentKeyNumber]
+                     : keyOffset + keyDefinitionLength;
     } else {
       keyOffset += keyDefinitionLength;
     }

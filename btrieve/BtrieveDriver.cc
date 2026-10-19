@@ -370,9 +370,11 @@ BtrieveError BtrieveDriver::openDatabase(const std::filesystem::path &database,
   BtrieveError error =
       sqlDatabase->open(toWideString(database).c_str(), openMode);
   if (error == BtrieveError::Success) {
-    // Set Position to First Record
-    performOperation(0, std::basic_string_view<uint8_t>(),
-                     OperationCode::StepFirst);
+    // No record is current after Open, and the physical next record is the
+    // first one, so Step Next returns it. Update, Delete and Get Position
+    // fail until a record is read.
+    sqlDatabase->setPosition(0);
+    sqlDatabase->clearCurrentRecord();
   }
   return error;
 }
@@ -582,6 +584,11 @@ void BtrieveDriver::close() {
 BtrieveError BtrieveDriver::performOperation(
     int keyNumber, std::basic_string_view<uint8_t> keyData,
     OperationCode operationCode) {
+  // record locks are not supported, so a lock bias (+100..+400) is ignored
+  if (operationCode >= 100 && operationCode < 500) {
+    operationCode = static_cast<OperationCode>(operationCode % 100);
+  }
+
   switch (operationCode) {
     case OperationCode::Delete:
       return sqlDatabase->deleteRecord();
@@ -596,12 +603,15 @@ BtrieveError BtrieveDriver::performOperation(
     case OperationCode::StepFirst + 200:
     case OperationCode::StepFirst + 300:
     case OperationCode::StepFirst + 400:
+      // Step First and Step Last destroy logical currency
+      previousQuery.reset();
       return sqlDatabase->stepFirst();
     case OperationCode::StepLast:
     case OperationCode::StepLast + 100:
     case OperationCode::StepLast + 200:
     case OperationCode::StepLast + 300:
     case OperationCode::StepLast + 400:
+      previousQuery.reset();
       return sqlDatabase->stepLast();
     case OperationCode::StepNext:
     case OperationCode::StepNext + 100:

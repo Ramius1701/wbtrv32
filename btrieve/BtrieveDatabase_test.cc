@@ -1,5 +1,10 @@
 #include "BtrieveDatabase.h"
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+#include "Text.h"
 #include "gtest/gtest.h"
 
 using namespace btrieve;
@@ -170,6 +175,54 @@ TEST(BtrieveDatabase, LoadsVariableDatV6) {
   ASSERT_EQ(database.getKeys()[0].getPrimarySegment().getLength(), 17u);
 }
 
+// A v6 file can carry stray pages where a PAT pair is expected (seen in a
+// Major BBS add-on's shipped .VIR: four junk pages ahead of PAT 31). Btrieve
+// finds the PAT by its sequence number and every physical page in that PAT's
+// region moves along with it, so loading must give the same records.
+TEST(BtrieveDatabase, LoadsVariableDatV6WithPagesBeforePAT) {
+  std::ifstream in("assets/WGSMENU2.DAT", std::ios::binary);
+  std::vector<char> original((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+  ASSERT_GT(original.size(), 2u * 4096u);
+
+  const size_t pageLength = 4096;
+  std::vector<char> shifted(original.begin(),
+                            original.begin() + 2 * pageLength);
+  shifted.resize(shifted.size() + 4 * pageLength, static_cast<char>(0xCC));
+  shifted.insert(shifted.end(), original.begin() + 2 * pageLength,
+                 original.end());
+
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() / "WGSMENU2-PATGAP.DAT";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(shifted.data(), shifted.size());
+  }
+
+  std::unordered_map<std::string, uint32_t> expectedData;
+  for (size_t i = 0; i < sizeof(variableData) / sizeof(variableData[0]); ++i) {
+    expectedData[variableData[i].key] = variableData[i].recordLength;
+  }
+
+  BtrieveDatabase database;
+  database.parseDatabase(
+      path.wstring().c_str(), []() { return true; },
+      [&expectedData](std::basic_string_view<uint8_t> record) {
+        auto iter =
+            expectedData.find(reinterpret_cast<const char *>(record.data()));
+        EXPECT_TRUE(iter != expectedData.end());
+        if (iter != expectedData.end()) {
+          EXPECT_EQ(iter->second, record.size());
+          expectedData.erase(iter);
+        }
+        return BtrieveDatabase::LoadRecordResult::COUNT;
+      });
+  std::filesystem::remove(path);
+
+  EXPECT_EQ(expectedData.size(), 0u);
+  ASSERT_EQ(database.getKeys().size(), 1u);
+}
+
 TEST(BtrieveDatabase, LoadsFixedDatV6) {
   unsigned int recordCount = 0;
   BtrieveDatabase database;
@@ -226,4 +279,86 @@ TEST(BtrieveDatabase, LoadsMultiAcsDatV6) {
 
   ASSERT_STREQ(database.getKeys().at(0).getACSName(), "ALLCAPS");
   ASSERT_STREQ(database.getKeys().at(2).getACSName(), "LOWER");
+}
+
+// NOCASE_KEY (0x400) shares a bit with NUMBERED_ACS (0x420), so a case
+// insensitive key without an ACS must not be treated as having one.
+TEST(BtrieveDatabase, LoadsCaseInsensitiveKeyWithoutACS) {
+  std::filesystem::path dat(testing::TempDir());
+  dat /= "NOCASE.DAT";
+  std::filesystem::copy_file("assets/MBBSEMU.DAT", dat,
+                             std::filesystem::copy_options::overwrite_existing);
+
+  // key 0's attributes are at 0x118 in this v5 file, 0x0101 (duplicates and
+  // extended type), so set the high byte to add NOCASE_KEY
+  {
+    std::fstream file(dat, std::ios::in | std::ios::out | std::ios::binary);
+    file.seekg(0x118);
+    char attributes[2];
+    file.read(attributes, sizeof(attributes));
+    ASSERT_EQ(attributes[0], 0x01);
+    ASSERT_EQ(attributes[1], 0x01);
+
+    file.seekp(0x119);
+    file.put(0x05);
+  }
+
+  BtrieveDatabase database;
+  database.parseDatabase(
+      toWideString(dat).c_str(), []() { return true; },
+      [](std::basic_string_view<uint8_t> record) {
+        return BtrieveDatabase::LoadRecordResult::COUNT;
+      });
+
+  ASSERT_EQ(database.getKeys().size(), 4u);
+  const KeyDefinition &key = database.getKeys()[0].getPrimarySegment();
+  EXPECT_EQ(key.getAttributes(), 0x0501);
+  EXPECT_TRUE(key.isCaseInsensitive());
+  EXPECT_FALSE(key.requiresACS());
+  EXPECT_EQ(key.getACS(), nullptr);
+  EXPECT_EQ(database.getRecordCount(), 4u);
+}
+
+// A Btrieve v5 key table has one 30-byte entry per segment, not per key, so
+// every key after a multi-segment key starts further along than its number
+// suggests. Expected values are what Btrieve 6.15's Stat reports for this
+// file (an empty data file from a Major BBS add-on).
+TEST(BtrieveDatabase, LoadsV5KeysAfterSegmentedKeys) {
+  BtrieveDatabase database;
+  database.parseDatabase(
+      _TEXT("assets/V5SEGKEY.DAT"), []() { return true; },
+      [](std::basic_string_view<uint8_t> record) {
+        return BtrieveDatabase::LoadRecordResult::COUNT;
+      });
+
+  struct Segment {
+    uint16_t offset;
+    uint16_t length;
+    KeyDataType type;
+  };
+  const std::vector<std::vector<Segment>> expected = {
+      {{0, 4, KeyDataType::UnsignedBinary}},
+      {{4, 30, KeyDataType::Zstring}},
+      {{34, 30, KeyDataType::Zstring}},
+      {{4, 30, KeyDataType::Zstring}, {0, 4, KeyDataType::UnsignedBinary}},
+      {{34, 30, KeyDataType::Zstring}, {0, 4, KeyDataType::UnsignedBinary}},
+      {{34, 30, KeyDataType::Zstring},
+       {64, 1, KeyDataType::String},
+       {0, 4, KeyDataType::UnsignedBinary}},
+  };
+
+  ASSERT_EQ(database.getKeys().size(), expected.size());
+  EXPECT_EQ(database.getRecordLength(), 216u);
+  for (size_t k = 0; k < expected.size(); ++k) {
+    const auto &segments = database.getKeys()[k].getSegments();
+    ASSERT_EQ(segments.size(), expected[k].size()) << "key " << k;
+    for (size_t s = 0; s < segments.size(); ++s) {
+      EXPECT_EQ(segments[s].getOffset(), expected[k][s].offset)
+          << "key " << k << " segment " << s;
+      EXPECT_EQ(segments[s].getLength(), expected[k][s].length)
+          << "key " << k << " segment " << s;
+      EXPECT_EQ(segments[s].getDataType(), expected[k][s].type)
+          << "key " << k << " segment " << s;
+    }
+  }
 }

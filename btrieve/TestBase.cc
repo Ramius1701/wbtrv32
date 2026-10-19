@@ -191,17 +191,8 @@ void TempPath::deleteAllFiles(const char *filePath) {
   for (auto &fileName : filesToUnlink) {
     std::filesystem::path path(filePath);
     path /= fileName;
-    // conversion moves originals into a wbtrv32-originals folder
-    if (std::filesystem::is_directory(path)) {
-      std::error_code error;
-      std::filesystem::remove_all(path, error);
-      EXPECT_FALSE(error) << error.message();
-      continue;
-    }
-#ifdef WIN32
-    EXPECT_EQ(_wunlink(path.c_str()), 0);
-#else
-    EXPECT_EQ(unlink(path.c_str()), 0);
-#endif
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+    EXPECT_FALSE(ec) << ec.message();
   }
 }

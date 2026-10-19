@@ -191,6 +191,7 @@
   <ItemGroup>
     <ClInclude Include="framework.h" />
     <ClInclude Include="wbtrv32.h" />
+    <ClInclude Include="wbtrv32_version.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
@@ -207,6 +208,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="wbtrv32.def" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="wbtrv32.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

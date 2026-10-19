@@ -9,6 +9,8 @@ filegroup(
         "MBBSEMU.DB.V2",
         "MBMGEPLT.DAT",
         "MULTIACS.DAT",
+        "V5SEGKEY.DAT",
+        "VARIABLE.BCR",
         "VARIABLE.DAT",
         "WCCACMS2.DAT",
         "WGSMENU2.DAT",

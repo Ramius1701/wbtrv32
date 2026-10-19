@@ -58,15 +58,9 @@ enum OperationCode {
   Extend = 0x10,
   SetDirectory = 0x11,
   GetDirectory = 0x12,
-  BeginTransaction = 0x13,
-  EndTransaction = 0x14,
-  AbortTransaction = 0x15,
-  // Begin Transaction with the concurrent bias (+1000)
-  BeginConcurrentTransaction = 0x13 + 1000,
   GetPosition = 0x16,
   WITH_RECORD_LOCK(GetDirectChunkOrRecord, 0x17),
   Version = 0x1A,
-  Unlock = 0x1B,
   Reset = 0x1C,
   SetOwner = 0x1D,
   ClearOwner = 0x1E,
@@ -132,7 +126,22 @@ enum OperationCode {
   //[QueryOnly]
   WITH_RECORD_LOCK(QueryLast, 0x3F),
 
+  // Transactions span every file the client writes until End or Abort. A
+  // lock bias (+100..+400) on Begin is accepted and ignored. A concurrent
+  // transaction (1019) is run as an exclusive one, and may also carry the
+  // +500 no-wait bias (1519..1919).
+  WITH_RECORD_LOCK(BeginTransaction, 0x13),
+  WITH_RECORD_LOCK(BeginConcurrentTransaction, 1019),
+  WITH_RECORD_LOCK(BeginConcurrentNoWaitTransaction, 1519),
+  EndTransaction = 0x14,
+  AbortTransaction = 0x15,
+
   Stop = 0x19,
+
+  // Releases record locks. Key number -1 releases the single-record lock on
+  // the position passed in the data buffer, -2 releases all multiple-record
+  // locks, and any other key number releases the current single-record lock.
+  Unlock = 0x1B,
 
   None = 0xFFFF,
 };
