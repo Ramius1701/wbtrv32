@@ -11,7 +11,7 @@ why, and where things are. Add a new dated entry at the top for each session.
 | Work branch | `work/local-majorbbs-2026-10-20` (local only, not pushed) |
 | Live board | The Major BBS v10 at `S:\BBS\BBSV10-wbtrv` (not MBBSEmu) |
 | Test bench | `test/bench/` in this repo; private data, saved DLLs and results in `test/bench/local/` (ignored by git) |
-| Original fix write-up | `S:\Github\wbtrv32-fixes.md` and the `wbtrv32-local-fixes*.patch` files beside it (9 Oct 2026) |
+| Original fix write-up | [`docs/wbtrv32-fixes.md`](wbtrv32-fixes.md) (9 Oct 2026); the `wbtrv32-local-fixes*.patch` files it came with are in `test/bench/local/patches/` |
 
 **Build and test (Windows):**
 
@@ -38,6 +38,8 @@ Everything now lives in `S:\Github\wbtrv32`. The old
   `rocheck/`, `dialcheck/`, `dialfix/`), the saved DLLs from 9 Oct, their
   `run-*.txt` results, the early code drafts and `isv-tree.json`. These hold
   real user data and must stay private.
+- **Also moved:** `S:\Github\wbtrv32-fixes.md` to `docs/`, and the
+  three `wbtrv32-local-fixes*.patch` files to `test/bench/local/patches/`.
 - **Not moved:** the old folder's `MBBSEmu` clone (a public repo the board
   doesn't use) and the harness's `obj/` build cache.
 
