@@ -8,7 +8,8 @@ why, and where things are. Add a new dated entry at the top for each session.
 | What | Where |
 |---|---|
 | Source (this repo) | `S:\Github\wbtrv32`, remote `origin` = `mbbsemu/wbtrv32` (the "donor") |
-| Work branch | `work/local-majorbbs-2026-10-20`, pushed to the fork |
+| Main branch | `main`, tracking `fork/main`; this is where work happens now |
+| Work branch | `work/local-majorbbs-2026-10-20`, kept on the fork as a marker of the 2026-10-20 merge |
 | Fork | [Ramius1701/wbtrv32](https://github.com/Ramius1701/wbtrv32), remote `fork` (public). `origin` still points at mbbsemu. |
 | Live board | The Major BBS v10 at `S:\BBS\BBSV10-wbtrv` (not MBBSEmu) |
 | Test bench | `test/bench/` in this repo; private data, saved DLLs and results in `test/bench/local/` (ignored by git) |
@@ -22,6 +23,15 @@ bin\tests\Win32\Release\tests.exe
 ```
 
 The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
+
+---
+
+## 2026-10-20: work moved onto main
+
+The fork's `main` was fast-forwarded to the work branch (`84f0c9b..8c7ee48`,
+nothing rewritten). Local `main` now points there, tracks `fork/main`, and is
+the branch to work on. The work branch is kept. To take later upstream
+changes: `git fetch origin`, then merge `origin/main` into `main`.
 
 ---
 
