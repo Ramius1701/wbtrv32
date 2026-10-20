@@ -10,7 +10,7 @@ why, and where things are. Add a new dated entry at the top for each session.
 | Source (this repo) | `S:\Github\wbtrv32`, remote `origin` = `mbbsemu/wbtrv32` (the "donor") |
 | Work branch | `work/local-majorbbs-2026-10-20` (local only, not pushed) |
 | Live board | The Major BBS v10 at `S:\BBS\BBSV10-wbtrv` (not MBBSEmu) |
-| Test bench | `S:\Github\wbtrv32-testbench`: copies of the board's `.DAT` files (private), a 32-bit C# harness, saved DLLs, `runall.sh` |
+| Test bench | `test/bench/` in this repo; private data, saved DLLs and results in `test/bench/local/` (ignored by git) |
 | Original fix write-up | `S:\Github\wbtrv32-fixes.md` and the `wbtrv32-local-fixes*.patch` files beside it (9 Oct 2026) |
 
 **Build and test (Windows):**
@@ -21,6 +21,25 @@ bin\tests\Win32\Release\tests.exe
 ```
 
 The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
+
+---
+
+## 2026-10-20: test bench moved into the repo
+
+Everything now lives in `S:\Github\wbtrv32`. The old
+`S:\Github\wbtrv32-testbench` folder was emptied into it:
+
+- **Committed** in `test/bench/`: the C# harness (`harness/Program.cs`,
+  `harness.csproj`), `runall.sh`, `boardstart_check.py`, `opened_files.py`
+  and a README. The scripts now find their files relative to themselves
+  instead of the old folder.
+- **Kept but ignored by git** in `test/bench/local/`: the board's `.DAT`
+  copies (`data/`, `boardstart/`), the reproductions (`scenario/`,
+  `rocheck/`, `dialcheck/`, `dialfix/`), the saved DLLs from 9 Oct, their
+  `run-*.txt` results, the early code drafts and `isv-tree.json`. These hold
+  real user data and must stay private.
+- **Not moved:** the old folder's `MBBSEmu` clone (a public repo the board
+  doesn't use) and the harness's `obj/` build cache.
 
 ---
 
@@ -147,6 +166,6 @@ wins**. Upstream's independent work was taken in.
 ### Open items
 
 - [ ] Run the board on the merged DLL and check `wbtrv32.log`.
-- [ ] Rerun the test bench (`runall.sh`) against the new DLL; its
-      `run-*.txt` results are from 9 Oct.
+- [ ] Rerun the test bench (`test/bench/runall.sh`) against the new DLL;
+      the `run-*.txt` results in `test/bench/local/results/` are from 9 Oct.
 - [ ] Decide whether to push the work branch or open a PR upstream.
