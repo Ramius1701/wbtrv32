@@ -27,7 +27,7 @@ The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
 ## 2026-10-20: test bench moved into the repo
 
 Everything now lives in `S:\Github\wbtrv32`. The old
-`S:\Github\wbtrv32-testbench` folder was emptied into it:
+`S:\Github\wbtrv32-testbench` folder was emptied into it and then deleted:
 
 - **Committed** in `test/bench/`: the C# harness (`harness/Program.cs`,
   `harness.csproj`), `runall.sh`, `boardstart_check.py`, `opened_files.py`
