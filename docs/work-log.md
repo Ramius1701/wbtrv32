@@ -8,7 +8,8 @@ why, and where things are. Add a new dated entry at the top for each session.
 | What | Where |
 |---|---|
 | Source (this repo) | `S:\Github\wbtrv32`, remote `origin` = `mbbsemu/wbtrv32` (the "donor") |
-| Work branch | `work/local-majorbbs-2026-10-20` (local only, not pushed) |
+| Work branch | `work/local-majorbbs-2026-10-20`, pushed to the fork |
+| Fork | [Ramius1701/wbtrv32](https://github.com/Ramius1701/wbtrv32), remote `fork` (public). `origin` still points at mbbsemu. |
 | Live board | The Major BBS v10 at `S:\BBS\BBSV10-wbtrv` (not MBBSEmu) |
 | Test bench | `test/bench/` in this repo; private data, saved DLLs and results in `test/bench/local/` (ignored by git) |
 | Original fix write-up | [`docs/wbtrv32-fixes.md`](wbtrv32-fixes.md) (9 Oct 2026); the `wbtrv32-local-fixes*.patch` files it came with are in `test/bench/local/patches/` |
@@ -21,6 +22,16 @@ bin\tests\Win32\Release\tests.exe
 ```
 
 The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
+
+---
+
+## 2026-10-20: pushed to a GitHub fork
+
+Forked mbbsemu/wbtrv32 to [Ramius1701/wbtrv32](https://github.com/Ramius1701/wbtrv32)
+(public) and pushed `work/local-majorbbs-2026-10-20` to it. The local
+branch tracks `fork/work/local-majorbbs-2026-10-20`, so `git push` sends new
+commits there. `test/bench/local/` is ignored by git, so it is **not** on
+GitHub and needs its own backup.
 
 ---
 
@@ -170,4 +181,4 @@ wins**. Upstream's independent work was taken in.
 - [ ] Run the board on the merged DLL and check `wbtrv32.log`.
 - [ ] Rerun the test bench (`test/bench/runall.sh`) against the new DLL;
       the `run-*.txt` results in `test/bench/local/results/` are from 9 Oct.
-- [ ] Decide whether to push the work branch or open a PR upstream.
+- [x] Push the work branch: on the fork since 2026-10-20.
