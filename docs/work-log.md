@@ -26,6 +26,27 @@ The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
 
 ---
 
+## 2026-10-25: upstream check
+
+`origin/main` (mbbsemu) has 23 new commits since our 20 Oct merge, all by
+Todd Jeffreys (paladine), up to version 1.1.1.
+
+- **PRs #36 to #47 port this fork's fixes**, one PR per numbered fix in
+  `docs/wbtrv32-fixes.md`: 1, 2, 3, 4, 5c, 5d, 8, 9, 10, 12, 13 and 14.
+  They are reimplementations, not these commits.
+- **Left out on purpose upstream** (they keep their own versions): the
+  transactions, the Unlock (upstream returns 3 for an unopened file), the
+  markers and `wbtrv32-originals` (#11), and the fingerprint and placeholder
+  handling (#5, 5a, 5b).
+- **Also new upstream**: Abseil logging (#50), smart pointers (#52),
+  Get Direct/Chunk plus stubs for operations 42/65/78 (#56), DebugAttach as a
+  runtime setting (#57), Bazel Windows build fixes (#58, #59), and an
+  ASan/UBSan cleanup (#51).
+- **Trial merge** (aborted): 15 files conflict, most of them in
+  `wbtrv32.cpp` (24 hunks) and `wbtrv32_test.cc` (12). Nothing was merged.
+
+---
+
 ## 2026-10-20: work moved onto main
 
 The fork's `main` was fast-forwarded to the work branch (`84f0c9b..8c7ee48`,
