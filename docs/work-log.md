@@ -26,6 +26,42 @@ The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
 
 ---
 
+## 2026-10-25: upstream's ports compared with this fork
+
+Checked from the code on `main` and `origin/main` and from upstream's PR
+notes. Nothing was run against the live board.
+
+**Where this fork behaves better for The Major BBS** (upstream left these out):
+
+| Event on the board | This fork | Upstream |
+|---|---|---|
+| Sysop deletes a module's `.DAT` to reset it | Open returns 12, as Btrieve does; data kept as `.db.bak` | The old `.db` is opened, so the reset never happens |
+| Copy-then-rename: create `NAME.D$$`, copy records, delete `NAME.DAT`, rename (Worldgroup crash recovery, compaction) | The renamed copy's data is used | The renamed file is a placeholder, so the old `NAME.db` is kept and the copy is orphaned in `NAME.D$$.db` |
+| A program renames or copies a `.DAT` | The data moves or is copied with it | The new name gets the stale original bytes, converted fresh |
+| A blank template is copied over a file converted while it was still blank | Converted fresh (marker replaced) | Same hash, so it isn't reset |
+
+**Where upstream behaves better:**
+
+| Area | This fork | Upstream |
+|---|---|---|
+| Create with key -1 when the `.DAT` is gone but the `.db` is left | Returns 59. If a sysop deletes the marker and the module creates without opening first, the BBS halts. | Moves the old `.db` aside and creates the file |
+| Short data buffer (status 22) | Fills the buffer on Get/Query only | Also fills it on Step and Get Direct |
+| Transactions | Begin takes a write lock on every open file (BEGIN IMMEDIATE), and files opened later join too | A file joins on its first write, so other board processes (wgsint, wccmmutl) aren't blocked from files the transaction only reads |
+| v6 PAT moved by stray pages | One offset, taken from PAT block 1 | Located per region (`locatePATs`/`toFilePage`) |
+
+**Small differences:** Unlock on an unopened file (this fork 0, upstream
+3, harmless to the BBS). Upstream logs through Abseil now, with the same
+`wbtrv32.log`, `LogLevel` and `WBTRV32_LOGLEVEL`.
+
+**The same on both sides:** per-handle positions (including no current
+record on a second open), serialised `BTRCALL`, `NAME.EXT.db` names and 8.3
+names, per-handle open modes (46, 88), Version 6.15, Update with an
+out-of-range key, the key ACS reset, Owner, Directory, Extended operations,
+Reset and Extend, the exception copy fix, and the low-word length and
+lock-bias fixes.
+
+---
+
 ## 2026-10-25: upstream check
 
 `origin/main` (mbbsemu) has 23 new commits since our 20 Oct merge, all by
