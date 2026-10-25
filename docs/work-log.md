@@ -71,8 +71,21 @@ its new work: Abseil logging, smart pointers, Get Direct/Chunk, stubs for
 bootstrapped with telemetry off) for Abseil. See the build command at the
 top of this log.
 
-**Result:** 394 of 394 tests pass (Release, x86). Not yet run on the live
-board.
+**Result:** 394 of 394 tests pass (Release, x86).
+
+**Pushed** to `fork/main` (`d113033..06cfc78`).
+
+**Deployed** to `S:\BBS\BBSV10-wbtrv\WBTRV32.DLL`: version 1.1.1, 1,332,224
+bytes, built 25 Oct 2026 13:55, hash matches the build. The previous 1.0.7
+DLL from 20 Oct is kept as `WBTRV32.DLL.2026-10-20-1.0.7.bak`, beside the
+9 Oct one. Abseil is linked in; the only new dependencies are the Windows
+system DLLs `USER32.dll` and `dbghelp.dll`.
+**Rollback:** close the board, then rename the `.bak` back to `WBTRV32.DLL`.
+
+**Watch for on the board:** a sysop-deleted file now gets created afresh by
+modules that call Create with key -1 (the old data goes to `.db.bak`), a
+short buffer on Step or Get Direct now gets the start of the record with
+status 22, and `wbtrv32.log` lines now carry microseconds (Abseil).
 
 ---
 
