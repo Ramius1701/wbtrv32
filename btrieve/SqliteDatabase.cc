@@ -84,9 +84,9 @@ class SqliteCreationRecordLoader : public RecordLoader {
   void createSqliteInsertionCommand() {
     std::string insertSql = buildInsertSql(keys, "data_t", false);
 
-    transaction.reset(new SqliteTransaction(this->database));
-    insertionCommand.reset(
-        new SqlitePreparedStatement(this->database, insertSql.c_str()));
+    transaction = std::make_unique<SqliteTransaction>(this->database);
+    insertionCommand = std::make_unique<SqlitePreparedStatement>(
+        this->database, insertSql.c_str());
   }
 
  private:
@@ -395,9 +395,6 @@ std::unique_ptr<RecordLoader> SqliteDatabase::create(
   // remove the file if is exists since we're creating it anew
   if (fileName != nullptr) {
     unlink(toStdString(fileName).c_str());
-    // and the old database's journal files, which belong to it, not the new one
-    unlink((toStdString(fileName) + "-wal").c_str());
-    unlink((toStdString(fileName) + "-shm").c_str());
     flags |= SQLITE_OPEN_CREATE;
   } else {
     flags |= SQLITE_OPEN_MEMORY;
@@ -424,8 +421,8 @@ std::unique_ptr<RecordLoader> SqliteDatabase::create(
   createSqliteDataIndices();
   createSqliteTriggers();
 
-  auto recordLoader = std::unique_ptr<SqliteCreationRecordLoader>(
-      new SqliteCreationRecordLoader(this->database, database));
+  auto recordLoader =
+      std::make_unique<SqliteCreationRecordLoader>(this->database, database);
   recordLoader->createSqliteInsertionCommand();
   return recordLoader;
 }
@@ -585,6 +582,18 @@ void SqliteDatabase::createSqliteTriggers() {
 }
 
 // Closes an opened database.
+void SqliteDatabase::close() {
+  // closing the connection rolls back an unfinished client transaction
+  preparedStatements.clear();
+  transactionStatements.clear();
+  database.reset();
+
+  keys.clear();
+  insertSql.clear();
+  updateSql.clear();
+  cache.clear();
+}
+
 // The source fingerprint lives in its own table rather than metadata_t, so
 // databases converted before it existed need no schema migration: they just
 // don't have the table yet.
@@ -712,53 +721,7 @@ bool SqliteDatabase::writeIdentity(const std::filesystem::path &database,
   return ok;
 }
 
-bool SqliteDatabase::readOwner(const std::filesystem::path &database,
-                               OwnerInfo &owner) {
-  ScopedConnection connection(database, SQLITE_OPEN_READONLY);
-  if (connection.db == nullptr) {
-    return false;
-  }
-  sqlite3_stmt *statement = nullptr;
-  bool found = false;
-  if (sqlite3_prepare_v2(connection.db,
-                         "SELECT name, mode FROM owner_t LIMIT 1", -1,
-                         &statement, nullptr) == SQLITE_OK &&
-      sqlite3_step(statement) == SQLITE_ROW) {
-    const unsigned char *name = sqlite3_column_text(statement, 0);
-    owner.name = name ? reinterpret_cast<const char *>(name) : "";
-    owner.mode = sqlite3_column_int(statement, 1);
-    found = true;
-  }
-  sqlite3_finalize(statement);
-  return found;
-}
 
-bool SqliteDatabase::writeOwner(const std::filesystem::path &database,
-                                const OwnerInfo *owner) {
-  ScopedConnection connection(database, SQLITE_OPEN_READWRITE);
-  if (connection.db == nullptr ||
-      sqlite3_exec(connection.db,
-                   "CREATE TABLE IF NOT EXISTS owner_t(name TEXT NOT NULL, "
-                   "mode INTEGER NOT NULL);"
-                   "DELETE FROM owner_t;",
-                   nullptr, nullptr, nullptr) != SQLITE_OK) {
-    return false;
-  }
-  if (owner == nullptr) {
-    return true;
-  }
-  sqlite3_stmt *statement = nullptr;
-  const bool ok =
-      sqlite3_prepare_v2(connection.db,
-                         "INSERT INTO owner_t(name, mode) VALUES(?, ?)", -1,
-                         &statement, nullptr) == SQLITE_OK &&
-      sqlite3_bind_text(statement, 1, owner->name.c_str(), -1,
-                        SQLITE_TRANSIENT) == SQLITE_OK &&
-      sqlite3_bind_int(statement, 2, owner->mode) == SQLITE_OK &&
-      sqlite3_step(statement) == SQLITE_DONE;
-  sqlite3_finalize(statement);
-  return ok;
-}
 
 bool SqliteDatabase::beginUserTransaction() {
   return database && sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr,
@@ -802,15 +765,41 @@ bool SqliteDatabase::copyDatabase(const std::filesystem::path &from,
   return sqlite3_backup_finish(backup) == SQLITE_OK && result == SQLITE_DONE;
 }
 
-void SqliteDatabase::close() {
-  preparedStatements.clear();
-  transactionStatements.clear();
-  database.reset();
+// owner_t, like dat_source_t, is optional and needs no version change.
+std::optional<OwnerInfo> SqliteDatabase::getOwner() {
+  {
+    SqlitePreparedStatement command(
+        database,
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
+        "name = 'owner_t'");
+    if (!command.executeReader()->read()) {
+      return std::nullopt;
+    }
+  }
 
-  keys.clear();
-  insertSql.clear();
-  updateSql.clear();
-  cache.clear();
+  SqlitePreparedStatement command(database, "SELECT name, mode FROM owner_t");
+  std::unique_ptr<SqliteReader> reader = command.executeReader();
+  if (!reader->read()) {
+    return std::nullopt;
+  }
+  return OwnerInfo{reader->getString(0), reader->getInt32(1)};
+}
+
+void SqliteDatabase::setOwner(const std::optional<OwnerInfo> &owner) {
+  SqlitePreparedStatement(database,
+                          "CREATE TABLE IF NOT EXISTS owner_t(name TEXT NOT "
+                          "NULL, mode INTEGER NOT NULL)")
+      .execute();
+  SqlitePreparedStatement(database, "DELETE FROM owner_t").execute();
+  if (!owner) {
+    return;
+  }
+
+  SqlitePreparedStatement command(
+      database, "INSERT INTO owner_t(name, mode) VALUES(@name, @mode)");
+  command.bindParameter(1, BindableValue(owner->name.c_str()));
+  command.bindParameter(2, BindableValue(static_cast<int32_t>(owner->mode)));
+  command.execute();
 }
 
 SqlitePreparedStatement &SqliteDatabase::getPreparedStatement(
@@ -1221,7 +1210,7 @@ BtrieveError SqliteDatabase::updateRecord(
 std::unique_ptr<Query> SqliteDatabase::newQuery(
     unsigned int position, const Key *key,
     std::basic_string_view<uint8_t> keyData) {
-  return std::unique_ptr<Query>(new SqliteQuery(this, position, key, keyData));
+  return std::make_unique<SqliteQuery>(this, position, key, keyData);
 }
 
 BtrieveError SqliteDatabase::nextReader(Query *query,

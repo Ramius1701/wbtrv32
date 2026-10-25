@@ -34,10 +34,11 @@ enum BtrieveError {
   BadRecordLength = 28,
   BadKeyLength = 29,
   NotBtrieveFile = 30,
+  // a transaction could not be committed or aborted on every file
   TransactionError = 36,
   TransactionIsActive = 37,
-  // End or Abort Transaction without a Begin Transaction
-  NoTransactionActive = 39,
+  // End or Abort Transaction with no transaction active
+  TransactionNotActive = 39,
   /* Btrieve version 5.x returns this status code
 if you attempt to perform a Step, Update, or Delete operation on a
 key-only file or a Get operation on a data only file */
@@ -52,10 +53,12 @@ key-only file or a Get operation on a data only file */
   FileAlreadyExists = 59,
   RejectCountReached = 60,
   IncorrectDescriptor = 62,
-  FilterLimitReached = 64,
   IncorrectFieldOffset = 65,
-  FileInUse = 85,
   IncompatibleMode = 88,
+  // Get Direct/Chunk: a chunk begins beyond the end of the record
+  ChunkOffsetTooBig = 103,
+  // Get Direct/Chunk: next-in-record with no position within the record
+  CannotGetNextChunk = 106,
 };
 
 const char* errorToString(BtrieveError error);

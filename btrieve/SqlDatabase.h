@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "BtrieveDatabase.h"
@@ -38,17 +39,17 @@ struct SourceFingerprint {
 // in for its Btrieve file, and the name of that file. A marker that turns up
 // under another name (renamed or copied by an application) is matched back to
 // its database by the id.
-// A file's owner name (Set Owner, 29) and what it allows without it:
-// mode 0/2 = nothing, 1/3 = read-only access. (Modes 2/3 also asked Btrieve
-// to encrypt the file; the database is not encrypted.)
-struct OwnerInfo {
-  std::string name;
-  int mode = 0;
-};
-
 struct DatabaseIdentity {
   std::string id;
   std::string source;  // file name (no directory) of the Btrieve file
+};
+
+// A file's owner name (Set Owner) and what it allows without the name: mode 0
+// or 2 nothing, 1 or 3 read-only access. Modes 2 and 3 also ask Btrieve to
+// encrypt the file, which the database isn't.
+struct OwnerInfo {
+  std::string name;
+  int mode;
 };
 
 // An interface that abstracts a SQL-compatible implementation of
@@ -102,29 +103,25 @@ class SqlDatabase {
     return false;
   }
 
-  // The file's owner, if it has one; writeOwner(nullptr) clears it.
-  virtual bool readOwner(const std::filesystem::path &database,
-                         OwnerInfo &owner) {
-    return false;
-  }
-  virtual bool writeOwner(const std::filesystem::path &database,
-                          const OwnerInfo *owner) {
-    return false;
-  }
-
-  // An application's own transaction (Begin/End/Abort Transaction): every
-  // change on this connection between begin and end is committed together,
-  // or none is.
-  virtual bool beginUserTransaction() { return false; }
-  virtual bool endUserTransaction() { return false; }
-  virtual bool abortUserTransaction() { return false; }
-
   // Copies a consistent snapshot of one database file to another (which may
   // be open elsewhere, including by this process).
   virtual bool copyDatabase(const std::filesystem::path &from,
                             const std::filesystem::path &to) {
     return false;
   }
+
+  // The file's owner, if it has one.
+  virtual std::optional<OwnerInfo> getOwner() = 0;
+
+  // Gives the file an owner, or with std::nullopt removes it.
+  virtual void setOwner(const std::optional<OwnerInfo> &owner) = 0;
+
+  // An application's own transaction (Begin/End/Abort Transaction): every
+  // change on this connection between begin and end is committed together,
+  // or none is. Closing with one open rolls it back.
+  virtual bool beginUserTransaction() { return false; }
+  virtual bool endUserTransaction() { return false; }
+  virtual bool abortUserTransaction() { return false; }
 
   virtual unsigned int getRecordLength() const { return recordLength; }
 

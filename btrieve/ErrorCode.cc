@@ -38,24 +38,24 @@ const char* errorToString(BtrieveError errorCode) {
     HANDLE_ERROR_CODE(BadRecordLength);
     HANDLE_ERROR_CODE(BadKeyLength);
     HANDLE_ERROR_CODE(NotBtrieveFile);
+    HANDLE_ERROR_CODE(TransactionError);
     HANDLE_ERROR_CODE(TransactionIsActive);
+    HANDLE_ERROR_CODE(TransactionNotActive);
     HANDLE_ERROR_CODE(OperationNotAllowed);
     HANDLE_ERROR_CODE(InvalidRecordAddress);
     HANDLE_ERROR_CODE(InvalidKeyPath);
     HANDLE_ERROR_CODE(AccessDenied);
     HANDLE_ERROR_CODE(InvalidACS);
     HANDLE_ERROR_CODE(InvalidInterface);
-    HANDLE_ERROR_CODE(FileAlreadyExists);
-    HANDLE_ERROR_CODE(TransactionError);
-    HANDLE_ERROR_CODE(NoTransactionActive);
     HANDLE_ERROR_CODE(OwnerAlreadySet);
     HANDLE_ERROR_CODE(InvalidOwner);
+    HANDLE_ERROR_CODE(FileAlreadyExists);
     HANDLE_ERROR_CODE(RejectCountReached);
     HANDLE_ERROR_CODE(IncorrectDescriptor);
-    HANDLE_ERROR_CODE(FilterLimitReached);
     HANDLE_ERROR_CODE(IncorrectFieldOffset);
-    HANDLE_ERROR_CODE(FileInUse);
     HANDLE_ERROR_CODE(IncompatibleMode);
+    HANDLE_ERROR_CODE(ChunkOffsetTooBig);
+    HANDLE_ERROR_CODE(CannotGetNextChunk);
 
     default:
       static char buf[16];

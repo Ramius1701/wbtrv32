@@ -19,10 +19,9 @@
 #include <sys/types.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iterator>
-#include <fstream>
-#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -78,7 +77,7 @@ TEST_F(BtrieveDriverTest, LoadsAndConverts) {
   {
     std::string acsName;
     std::vector<char> blankACS;
-    BtrieveDriver driver(new SqliteDatabase());
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
     auto mbbsEmuDat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
     driver.open(mbbsEmuDat.c_str());
@@ -224,7 +223,7 @@ TEST_F(BtrieveDriverTest, LoadsAndConverts) {
 TEST_F(BtrieveDriverTest, LoadsPreexistingSqliteDatabase) {
   std::string acsName;
   std::vector<char> blankACS;
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -258,6 +257,9 @@ TEST_F(BtrieveDriverTest, LoadsPreexistingSqliteDatabase) {
                           false, 0, 0, 0, acsName, blankACS));
 }
 
+// Fields of packed structs can be misaligned, so they're compared and stored
+// as copies (+field): gtest and std::vector take const T&, and binding a
+// reference to a misaligned field is undefined behaviour.
 #pragma pack(push, 1)
 typedef struct _tagMBBSEmuRecordStruct {
   uint16_t header;
@@ -271,7 +273,7 @@ typedef struct _tagMBBSEmuRecordStruct {
 static_assert(sizeof(MBBSEmuRecordStruct) == 74);
 
 TEST_F(BtrieveDriverTest, StepNext) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -284,7 +286,7 @@ TEST_F(BtrieveDriverTest, StepNext) {
   std::pair<bool, Record> data(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             3444);
@@ -297,7 +299,7 @@ TEST_F(BtrieveDriverTest, StepNext) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             7776);
@@ -310,7 +312,7 @@ TEST_F(BtrieveDriverTest, StepNext) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             1052234073);
@@ -323,7 +325,7 @@ TEST_F(BtrieveDriverTest, StepNext) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             -615634567);
@@ -336,7 +338,7 @@ TEST_F(BtrieveDriverTest, StepNext) {
 }
 
 TEST_F(BtrieveDriverTest, StepPrevious) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -349,7 +351,7 @@ TEST_F(BtrieveDriverTest, StepPrevious) {
   std::pair<bool, Record> data(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             -615634567);
@@ -362,7 +364,7 @@ TEST_F(BtrieveDriverTest, StepPrevious) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             1052234073);
@@ -375,7 +377,7 @@ TEST_F(BtrieveDriverTest, StepPrevious) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             7776);
@@ -388,7 +390,7 @@ TEST_F(BtrieveDriverTest, StepPrevious) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             3444);
@@ -401,7 +403,7 @@ TEST_F(BtrieveDriverTest, StepPrevious) {
 }
 
 TEST_F(BtrieveDriverTest, RandomAccess) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -413,14 +415,14 @@ TEST_F(BtrieveDriverTest, RandomAccess) {
       data.second.getData().data());
 
   EXPECT_STREQ(dbValue->key0, "Sysop");
-  EXPECT_EQ(dbValue->key1, -615634567);
+  EXPECT_EQ(+dbValue->key1, -615634567);
   EXPECT_STREQ(dbValue->key2, "stringValue");
-  EXPECT_EQ(dbValue->key3, 4u);
+  EXPECT_EQ(+dbValue->key3, 4u);
 
   data = driver.getRecord(3);
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             1052234073);
@@ -428,7 +430,7 @@ TEST_F(BtrieveDriverTest, RandomAccess) {
   data = driver.getRecord(2);
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             7776);
@@ -436,14 +438,14 @@ TEST_F(BtrieveDriverTest, RandomAccess) {
   data = driver.getRecord(1);
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             3444);
 }
 
 TEST_F(BtrieveDriverTest, RandomInvalidAccess) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -468,7 +470,7 @@ TEST_F(BtrieveDriverTest, RandomInvalidAccess) {
 }
 
 TEST_F(BtrieveDriverTest, GetRecordCount) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -484,7 +486,7 @@ TEST_F(BtrieveDriverTest, NewerDatDoesNotReplaceExistingDb) {
   auto mbbsEmuDat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
 
   {
-    BtrieveDriver driver(new SqliteDatabase());
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
     ASSERT_EQ(driver.open(mbbsEmuDat.c_str()), BtrieveError::Success);
     ASSERT_EQ(driver.getRecordCount(), 4u);
 
@@ -497,13 +499,47 @@ TEST_F(BtrieveDriverTest, NewerDatDoesNotReplaceExistingDb) {
       mbbsEmuDat, std::filesystem::file_time_type::clock::now() +
                       std::chrono::hours(1));
 
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
   ASSERT_EQ(driver.open(mbbsEmuDat.c_str()), BtrieveError::Success);
   ASSERT_EQ(driver.getRecordCount(), 0u);
 }
 
+// Puts a different Btrieve file (MBMGEPLT.DAT, 22 records) where dat is, with
+// a newer timestamp, as a module upgrade would.
+static void replaceWithDifferentDat(TempPath &tempPath,
+                                    const std::filesystem::path &dat) {
+  auto other = tempPath.copyToTempPath("assets/MBMGEPLT.DAT");
+  std::filesystem::copy_file(other, dat,
+                             std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::remove(other);
+  std::filesystem::last_write_time(
+      dat, std::filesystem::file_time_type::clock::now() +
+               std::chrono::hours(1));
+}
+
+// With tracking off (the parity shim, where stock Btrieve writes the .DATs),
+// the .DB always wins.
+TEST_F(BtrieveDriverTest, ChangedDatIgnoredWhenTrackingOff) {
+  auto mbbsEmuDat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+
+  {
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>(), false);
+    ASSERT_EQ(driver.open(mbbsEmuDat.c_str()), BtrieveError::Success);
+    ASSERT_EQ(driver.deleteAll(), BtrieveError::Success);
+  }
+
+  replaceWithDifferentDat(*tempPath, mbbsEmuDat);
+
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>(), false);
+  ASSERT_EQ(driver.open(mbbsEmuDat.c_str()), BtrieveError::Success);
+  EXPECT_EQ(driver.getRecordCount(), 0u);
+  std::filesystem::path backup(mbbsEmuDat);
+  backup.replace_extension(".db.bak");
+  EXPECT_FALSE(std::filesystem::exists(backup));
+}
+
 TEST_F(BtrieveDriverTest, DeleteAll) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -523,7 +559,7 @@ TEST_F(BtrieveDriverTest, DeleteAll) {
 #endif
 
 TEST_F(BtrieveDriverTest, Delete) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb =
       tempPath->copyToTempPath("assets" PATH_SEPARATOR "MBBSEMU.DB");
@@ -549,7 +585,7 @@ TEST_F(BtrieveDriverTest, Delete) {
 }
 
 TEST_F(BtrieveDriverTest, RecordDeleteOneIteration) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -568,7 +604,7 @@ TEST_F(BtrieveDriverTest, RecordDeleteOneIteration) {
   std::pair<bool, Record> data(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             3444);
@@ -581,7 +617,7 @@ TEST_F(BtrieveDriverTest, RecordDeleteOneIteration) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             1052234073);
@@ -594,7 +630,7 @@ TEST_F(BtrieveDriverTest, RecordDeleteOneIteration) {
   data = std::move(driver.getRecord());
   ASSERT_TRUE(data.first);
   ASSERT_EQ(data.second.getData().size(), 74u);
-  EXPECT_EQ(reinterpret_cast<const MBBSEmuRecordStruct *>(
+  EXPECT_EQ(+reinterpret_cast<const MBBSEmuRecordStruct *>(
                 data.second.getData().data())
                 ->key1,
             -615634567);
@@ -607,7 +643,7 @@ TEST_F(BtrieveDriverTest, RecordDeleteOneIteration) {
 }
 
 TEST_F(BtrieveDriverTest, InsertionTest) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -630,15 +666,15 @@ TEST_F(BtrieveDriverTest, InsertionTest) {
           data.second.getData().data());
 
   ASSERT_STREQ(dbRecord->key0, "Paladine");
-  ASSERT_EQ(dbRecord->key1, 31337);
+  ASSERT_EQ(+dbRecord->key1, 31337);
   ASSERT_STREQ(dbRecord->key2, "In orbe terrarum, optimus sum");
-  ASSERT_EQ(dbRecord->key3, 5u);
+  ASSERT_EQ(+dbRecord->key3, 5u);
 
   ASSERT_EQ(driver.getRecordCount(), 5u);
 }
 
 TEST_F(BtrieveDriverTest, InsertionTestManualAutoincrementedValue) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -662,15 +698,15 @@ TEST_F(BtrieveDriverTest, InsertionTestManualAutoincrementedValue) {
           data.second.getData().data());
 
   ASSERT_STREQ(dbRecord->key0, "Paladine");
-  ASSERT_EQ(dbRecord->key1, 31337);
+  ASSERT_EQ(+dbRecord->key1, 31337);
   ASSERT_STREQ(dbRecord->key2, "In orbe terrarum, optimus sum");
-  ASSERT_EQ(dbRecord->key3, 4444u);
+  ASSERT_EQ(+dbRecord->key3, 4444u);
 
   ASSERT_EQ(driver.getRecordCount(), 5u);
 }
 
 TEST_F(BtrieveDriverTest, InsertionTestSubSize) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -694,15 +730,15 @@ TEST_F(BtrieveDriverTest, InsertionTestSubSize) {
           data.second.getData().data());
 
   ASSERT_STREQ(dbRecord->key0, "Paladine");
-  ASSERT_EQ(dbRecord->key1, 31337);
+  ASSERT_EQ(+dbRecord->key1, 31337);
   ASSERT_STREQ(dbRecord->key2, "In orbe terrarum, opti");  // cut off
-  ASSERT_EQ(dbRecord->key3, 5u);
+  ASSERT_EQ(+dbRecord->key3, 5u);
 
   ASSERT_EQ(driver.getRecordCount(), 5u);
 }
 
 TEST_F(BtrieveDriverTest, InsertionConstraintFailure) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -722,7 +758,7 @@ TEST_F(BtrieveDriverTest, InsertionConstraintFailure) {
 }
 
 TEST_F(BtrieveDriverTest, UpdateTest) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -747,15 +783,15 @@ TEST_F(BtrieveDriverTest, UpdateTest) {
           data.second.getData().data());
 
   ASSERT_STREQ(dbRecord->key0, "Sysop");
-  ASSERT_EQ(dbRecord->key1, 31337);
+  ASSERT_EQ(+dbRecord->key1, 31337);
   ASSERT_STREQ(dbRecord->key2, "In orbe terrarum, optimus sum");
-  ASSERT_EQ(dbRecord->key3, 1u);
+  ASSERT_EQ(+dbRecord->key3, 1u);
 
   ASSERT_EQ(driver.getRecordCount(), 4u);
 }
 
 TEST_F(BtrieveDriverTest, UpdateTestSubSize) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -785,15 +821,15 @@ TEST_F(BtrieveDriverTest, UpdateTestSubSize) {
           data.second.getData().data());
 
   ASSERT_STREQ(dbRecord->key0, "Sysop");
-  ASSERT_EQ(dbRecord->key1, 31337);
+  ASSERT_EQ(+dbRecord->key1, 31337);
   ASSERT_STREQ(dbRecord->key2, "In orbe terrarum, optimus sum");
-  ASSERT_EQ(dbRecord->key3, 2u);  // truncated down to 2
+  ASSERT_EQ(+dbRecord->key3, 2u);  // truncated down to 2
 
   ASSERT_EQ(driver.getRecordCount(), 4u);
 }
 
 TEST_F(BtrieveDriverTest, UpdateConstraintFailedTest) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -820,15 +856,15 @@ TEST_F(BtrieveDriverTest, UpdateConstraintFailedTest) {
           data.second.getData().data());
 
   ASSERT_STREQ(dbRecord->key0, "Sysop");
-  ASSERT_EQ(dbRecord->key1, 3444);
+  ASSERT_EQ(+dbRecord->key1, 3444);
   ASSERT_STREQ(dbRecord->key2, "3444");
-  ASSERT_EQ(dbRecord->key3, 1u);
+  ASSERT_EQ(+dbRecord->key3, 1u);
 
   ASSERT_EQ(driver.getRecordCount(), 4u);
 }
 
 TEST_F(BtrieveDriverTest, UpdateTestNonModifiableKeyModifiedFailed) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -854,15 +890,15 @@ TEST_F(BtrieveDriverTest, UpdateTestNonModifiableKeyModifiedFailed) {
           data.second.getData().data());
 
   EXPECT_STREQ(dbRecord->key0, "Sysop");
-  EXPECT_EQ(dbRecord->key1, 3444);
+  EXPECT_EQ(+dbRecord->key1, 3444);
   EXPECT_STREQ(dbRecord->key2, "3444");
-  EXPECT_EQ(dbRecord->key3, 1u);
+  EXPECT_EQ(+dbRecord->key3, 1u);
 
   ASSERT_EQ(driver.getRecordCount(), 4u);
 }
 
 TEST_F(BtrieveDriverTest, UpdateInvalidKeyNumber) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -884,13 +920,14 @@ TEST_F(BtrieveDriverTest, UpdateInvalidKeyNumber) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyStringDuplicates) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
 
-  auto key = std::basic_string_view<uint8_t>(
-      reinterpret_cast<const uint8_t *>("Sysop"), 255);  // tests key truncation
+  // longer than the key, to test truncation; zero padded past "Sysop"
+  const uint8_t keyBuffer[255] = {'S', 'y', 's', 'o', 'p'};
+  auto key = std::basic_string_view<uint8_t>(keyBuffer, sizeof(keyBuffer));
 
   ASSERT_EQ(driver.performOperation(0, key, OperationCode::QueryEqual),
             BtrieveError::Success);
@@ -914,7 +951,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyStringDuplicates) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyStringDuplicatesUpAndDown) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -970,7 +1007,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyStringDuplicatesUpAndDown) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1017,7 +1054,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1038,7 +1075,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyInteger) {
       reinterpret_cast<const MBBSEmuRecordStruct *>(
           data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 1052234073);
+  ASSERT_EQ(+dbRecord->key1, 1052234073);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryNext),
             BtrieveError::EndOfFile);
@@ -1061,7 +1098,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1079,7 +1116,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyFirstString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1140,7 +1177,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyFirstInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1156,7 +1193,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstInteger) {
       reinterpret_cast<const MBBSEmuRecordStruct *>(
           data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, -615634567);
+  ASSERT_EQ(+dbRecord->key1, -615634567);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryNext),
@@ -1168,7 +1205,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 3444);
+  ASSERT_EQ(+dbRecord->key1, 3444);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryNext),
@@ -1181,7 +1218,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 7776);
+  ASSERT_EQ(+dbRecord->key1, 7776);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryNext),
@@ -1194,7 +1231,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 1052234073);
+  ASSERT_EQ(+dbRecord->key1, 1052234073);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryNext),
@@ -1203,7 +1240,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyFirstNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1224,7 +1261,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyFirstNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLastString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1291,7 +1328,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLastInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1307,7 +1344,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastInteger) {
       reinterpret_cast<const MBBSEmuRecordStruct *>(
           data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 1052234073);
+  ASSERT_EQ(+dbRecord->key1, 1052234073);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryPrevious),
@@ -1319,7 +1356,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 7776);
+  ASSERT_EQ(+dbRecord->key1, 7776);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryPrevious),
@@ -1332,7 +1369,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 3444);
+  ASSERT_EQ(+dbRecord->key1, 3444);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryPrevious),
@@ -1345,7 +1382,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, -615634567);
+  ASSERT_EQ(+dbRecord->key1, -615634567);
 
   ASSERT_EQ(driver.performOperation(1, std::basic_string_view<uint8_t>(),
                                     OperationCode::QueryPrevious),
@@ -1354,7 +1391,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLastNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1375,7 +1412,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLastNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyGreaterString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1412,7 +1449,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyGreaterInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1431,7 +1468,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterInteger) {
   const auto *dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 7776);
+  ASSERT_EQ(+dbRecord->key1, 7776);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryNext),
             BtrieveError::Success);
@@ -1442,7 +1479,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 1052234073);
+  ASSERT_EQ(+dbRecord->key1, 1052234073);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryNext),
             BtrieveError::EndOfFile);
@@ -1450,7 +1487,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyGreaterNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1464,7 +1501,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1513,7 +1550,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1532,7 +1569,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualInteger) {
   const auto *dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 3444);
+  ASSERT_EQ(+dbRecord->key1, 3444);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryNext),
             BtrieveError::Success);
@@ -1544,7 +1581,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 7776);
+  ASSERT_EQ(+dbRecord->key1, 7776);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryNext),
             BtrieveError::Success);
@@ -1555,7 +1592,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 1052234073);
+  ASSERT_EQ(+dbRecord->key1, 1052234073);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryNext),
             BtrieveError::EndOfFile);
@@ -1563,7 +1600,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1577,7 +1614,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyGreaterOrEqualNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLessString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1603,7 +1640,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLessInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1622,7 +1659,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessInteger) {
   const auto *dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 3444);
+  ASSERT_EQ(+dbRecord->key1, 3444);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryPrevious),
             BtrieveError::Success);
@@ -1633,7 +1670,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, -615634567);
+  ASSERT_EQ(+dbRecord->key1, -615634567);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryPrevious),
             BtrieveError::EndOfFile);
@@ -1641,7 +1678,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLessNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1655,7 +1692,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualString) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1693,7 +1730,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualString) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualInteger) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1712,7 +1749,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualInteger) {
   const auto *dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 7776);
+  ASSERT_EQ(+dbRecord->key1, 7776);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryPrevious),
             BtrieveError::Success);
@@ -1724,7 +1761,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 3444);
+  ASSERT_EQ(+dbRecord->key1, 3444);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryPrevious),
             BtrieveError::Success);
@@ -1735,7 +1772,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualInteger) {
   dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, -615634567);
+  ASSERT_EQ(+dbRecord->key1, -615634567);
 
   ASSERT_EQ(driver.performOperation(1, key, OperationCode::QueryPrevious),
             BtrieveError::EndOfFile);
@@ -1743,7 +1780,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualInteger) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualNotFound) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1757,7 +1794,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyLessOrEqualNotFound) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyEqualWithDuplicates) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1788,7 +1825,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyEqualWithDuplicates) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyEqualWithDuplicatesUpAndDown) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -1940,7 +1977,7 @@ static void verifyMbmgepltKey2Ordering(BtrieveDriver &driver) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyDuplicatesOrderedByPosition) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto dat = tempPath->copyToTempPath("assets/MBMGEPLT.DAT");
   ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
@@ -1956,7 +1993,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyDuplicatesOrderedByPositionWithoutIndex) {
   auto dat = tempPath->copyToTempPath("assets/MBMGEPLT.DAT");
 
   {
-    BtrieveDriver driver(new SqliteDatabase());
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
     ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
   }
 
@@ -1972,7 +2009,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyDuplicatesOrderedByPositionWithoutIndex) {
             SQLITE_OK);
   sqlite3_close(db);
 
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
   ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
 
   verifyMbmgepltKey2Ordering(driver);
@@ -1995,6 +2032,14 @@ static std::vector<char> upperACS() {
   return ret;
 }
 
+// Reads a T at data, which needn't be aligned for it.
+template <typename T>
+static T readAt(const uint8_t *data) {
+  T value;
+  memcpy(&value, data, sizeof(value));
+  return value;
+}
+
 static std::vector<uint8_t> createRecord(const char *username, float value1 = 0,
                                          double value2 = 0) {
   std::vector<uint8_t> record(ACS_RECORD_LENGTH);
@@ -2002,8 +2047,9 @@ static std::vector<uint8_t> createRecord(const char *username, float value1 = 0,
   memset(record.data(), 0xFF, record.size());
   strcpy(reinterpret_cast<char *>(record.data() + 2), username);
 
-  *reinterpret_cast<float *>(record.data() + 64) = value1;
-  *reinterpret_cast<double *>(record.data() + 68) = value2;
+  // memcpy, as offset 68 isn't aligned for a double
+  memcpy(record.data() + 64, &value1, sizeof(value1));
+  memcpy(record.data() + 68, &value2, sizeof(value2));
 
   return record;
 }
@@ -2043,8 +2089,9 @@ static BtrieveDatabase createACSBtrieveDatabase(KeyDataType stringKeyDataType) {
 }
 
 TEST_F(BtrieveDriverTest, ACSSeekByKey_Zstring) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader = database->create(
       _TEXT("unused.db"), createACSBtrieveDatabase(KeyDataType::Zstring));
@@ -2075,8 +2122,9 @@ TEST_F(BtrieveDriverTest, ACSSeekByKey_Zstring) {
 }
 
 TEST_F(BtrieveDriverTest, ACSSeekByKey_String) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader = database->create(
       _TEXT("unused.db"), createACSBtrieveDatabase(KeyDataType::String));
@@ -2113,8 +2161,9 @@ TEST_F(BtrieveDriverTest, ACSSeekByKey_String) {
 }
 
 TEST_F(BtrieveDriverTest, ACSSeekByKey_Lstring) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader = database->create(
       _TEXT("unused.db"), createACSBtrieveDatabase(KeyDataType::Lstring));
@@ -2157,8 +2206,9 @@ TEST_F(BtrieveDriverTest, ACSSeekByKey_Lstring) {
 }
 
 TEST_F(BtrieveDriverTest, ACSInsertDuplicateFails) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader = database->create(
       _TEXT("unused.db"), createACSBtrieveDatabase(KeyDataType::Zstring));
@@ -2182,8 +2232,9 @@ TEST_F(BtrieveDriverTest, ACSInsertDuplicateFails) {
 }
 
 TEST_F(BtrieveDriverTest, FloatSeekByKey) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader = database->create(
       _TEXT("unused.db"), createACSBtrieveDatabase(KeyDataType::Zstring));
@@ -2209,11 +2260,8 @@ TEST_F(BtrieveDriverTest, FloatSeekByKey) {
   ASSERT_EQ(driver.getPosition(), 2u);
   ASSERT_EQ(data.second.getData().size(), ACS_RECORD_LENGTH);
   ASSERT_EQ(memcmp(data.second.getData().data() + 2, "Paladine", 8), 0);
-  ASSERT_EQ(*reinterpret_cast<const float *>(data.second.getData().data() + 64),
-            -1.0f);
-  ASSERT_EQ(
-      *reinterpret_cast<const double *>(data.second.getData().data() + 68),
-      -2.0);
+  ASSERT_EQ(readAt<float>(data.second.getData().data() + 64), -1.0f);
+  ASSERT_EQ(readAt<double>(data.second.getData().data() + 68), -2.0);
 
   double dkey = 2.0f;
   key = std::basic_string_view<uint8_t>(
@@ -2226,11 +2274,8 @@ TEST_F(BtrieveDriverTest, FloatSeekByKey) {
   ASSERT_EQ(driver.getPosition(), 1u);
   ASSERT_EQ(data.second.getData().size(), ACS_RECORD_LENGTH);
   ASSERT_EQ(memcmp(data.second.getData().data() + 2, "Sysop", 6), 0);
-  ASSERT_EQ(*reinterpret_cast<const float *>(data.second.getData().data() + 64),
-            1.0f);
-  ASSERT_EQ(
-      *reinterpret_cast<const double *>(data.second.getData().data() + 68),
-      2.0);
+  ASSERT_EQ(readAt<float>(data.second.getData().data() + 64), 1.0f);
+  ASSERT_EQ(readAt<double>(data.second.getData().data() + 68), 2.0);
 }
 
 static BtrieveDatabase createKeylessBtrieveDatabase() {
@@ -2248,8 +2293,9 @@ static BtrieveDatabase createKeylessBtrieveDatabase() {
 }
 
 TEST_F(BtrieveDriverTest, KeylessDatabaseEnumeration) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader =
       database->create(_TEXT("unused.db"), createKeylessBtrieveDatabase());
@@ -2311,8 +2357,9 @@ TEST_F(BtrieveDriverTest, KeylessDatabaseEnumeration) {
 }
 
 TEST_F(BtrieveDriverTest, KeylessDataQueryFails) {
-  SqliteDatabase *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
 
   auto recordLoader =
       database->create(_TEXT("unused.db"), createKeylessBtrieveDatabase());
@@ -2330,7 +2377,7 @@ TEST_F(BtrieveDriverTest, KeylessDataQueryFails) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyChangeKeyNumbers) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -2349,7 +2396,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyChangeKeyNumbers) {
   const auto *dbRecord = reinterpret_cast<const MBBSEmuRecordStruct *>(
       data.second.getData().data());
 
-  ASSERT_EQ(dbRecord->key1, 7776);
+  ASSERT_EQ(+dbRecord->key1, 7776);
 
   ASSERT_EQ(driver.performOperation(0, key, OperationCode::QueryNext),
             BtrieveError::DifferentKeyNumber);
@@ -2362,7 +2409,7 @@ TEST_F(BtrieveDriverTest, SeekByKeyChangeKeyNumbers) {
 }
 
 TEST_F(BtrieveDriverTest, SeekByKeyInvalidKey) {
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
 
   auto mbbsEmuDb = tempPath->copyToTempPath("assets/MBBSEMU.DB");
   driver.open(mbbsEmuDb.c_str());
@@ -2376,245 +2423,6 @@ TEST_F(BtrieveDriverTest, SeekByKeyInvalidKey) {
 
   ASSERT_EQ(driver.performOperation(4, key, OperationCode::QueryLessOrEqual),
             BtrieveError::InvalidKeyNumber);
-}
-
-// The .db holds the live data once a file has been converted. A .DAT whose
-// timestamp moved but whose contents didn't (copied, touched, restored to the
-// same bytes) must not trigger a reconversion that throws that data away.
-TEST_F(BtrieveDriverTest, TouchedDatKeepsConvertedData) {
-  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
-  {
-    BtrieveDriver driver(new SqliteDatabase());
-    ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
-    ASSERT_GT(driver.getRecordCount(), 0u);
-    driver.deleteAll();  // returns its status as a bool: false = Success
-    ASSERT_EQ(driver.getRecordCount(), 0u);
-  }
-
-  std::filesystem::last_write_time(
-      dat, std::filesystem::file_time_type::clock::now() +
-               std::chrono::hours(1));
-
-  BtrieveDriver driver(new SqliteDatabase());
-  ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
-  EXPECT_EQ(driver.getRecordCount(), 0u);
-  EXPECT_TRUE(driver.getNotices().empty());
-}
-
-// Deleting a converted .DAT is how applications reset a file: Btrieve then
-// reports the file missing, so wbtrv32 must too, keeping the data as .db.bak.
-TEST_F(BtrieveDriverTest, DeletedDatIsReportedMissing) {
-  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
-  {
-    BtrieveDriver driver(new SqliteDatabase());
-    ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
-  }
-
-  ASSERT_TRUE(std::filesystem::remove(std::filesystem::path(dat)));
-
-  BtrieveDriver driver(new SqliteDatabase());
-  EXPECT_EQ(driver.open(dat.c_str()), BtrieveError::FileNotFound);
-  EXPECT_FALSE(driver.getNotices().empty());
-
-  std::filesystem::path db(dat), backup(dat);
-  db.replace_extension(".db");
-  backup.replace_extension(".db.bak");
-  EXPECT_FALSE(std::filesystem::exists(db));
-  EXPECT_TRUE(std::filesystem::exists(backup));
-}
-
-// Files that differ only in extension (a .MST master copy beside its .DAT)
-// must not share one database.
-TEST_F(BtrieveDriverTest, SameNameDifferentExtensionsGetSeparateDatabases) {
-  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
-  std::filesystem::path mst(dat);
-  mst.replace_extension(".MST");
-  std::filesystem::copy_file(std::filesystem::path("assets/VARIABLE.DAT"), mst);
-
-  BtrieveDriver datDriver(new SqliteDatabase());
-  ASSERT_EQ(datDriver.open(dat.c_str()), BtrieveError::Success);
-  BtrieveDriver mstDriver(new SqliteDatabase());
-  ASSERT_EQ(mstDriver.open(mst.wstring().c_str()), BtrieveError::Success);
-
-  EXPECT_NE(datDriver.getRecordCount(), mstDriver.getRecordCount());
-
-  std::filesystem::path mstDb(mst);
-  mstDb += ".db";
-  EXPECT_TRUE(std::filesystem::exists(mstDb));
-  EXPECT_EQ(BtrieveDriver::sqlPathFor(dat, L"db").filename(),
-            std::filesystem::path(L"MBBSEMU.db"));
-  EXPECT_EQ(BtrieveDriver::sqlPathFor(mst, L"db").filename(),
-            std::filesystem::path(L"MBBSEMU.MST.db"));
-}
-
-// Opening the database file itself, by name, again and again must leave it
-// alone: there is no separate Btrieve file to compare it with.
-TEST_F(BtrieveDriverTest, OpeningTheDatabaseDirectlyLeavesItAlone) {
-  auto db = tempPath->copyToTempPath("assets/MBBSEMU.DB");
-  {
-    // the first open upgrades the older schema in place, once
-    BtrieveDriver driver(new SqliteDatabase());
-    ASSERT_EQ(driver.open(db.c_str()), BtrieveError::Success);
-  }
-  const auto originalSize = std::filesystem::file_size(db);
-  for (int i = 0; i < 3; ++i) {
-    BtrieveDriver driver(new SqliteDatabase());
-    ASSERT_EQ(driver.open(db.c_str()), BtrieveError::Success);
-    EXPECT_GT(driver.getRecordCount(), 0u);
-    EXPECT_TRUE(driver.getNotices().empty());
-  }
-  std::filesystem::path backup(db);
-  backup += ".bak";
-  EXPECT_FALSE(std::filesystem::exists(backup));
-  EXPECT_EQ(std::filesystem::file_size(db), originalSize);
-}
-
-// --- marker behaviour -------------------------------------------------------
-
-namespace {
-unsigned int recordsIn(const std::filesystem::path &file,
-                       std::vector<std::string> *notices = nullptr) {
-  BtrieveDriver driver(new SqliteDatabase());
-  if (driver.open(file.wstring().c_str()) != BtrieveError::Success) {
-    return 0xFFFFFFFF;
-  }
-  if (notices != nullptr) {
-    *notices = driver.getNotices();
-  }
-  return driver.getRecordCount();
-}
-
-void emptyOut(const std::filesystem::path &file) {
-  BtrieveDriver driver(new SqliteDatabase());
-  ASSERT_EQ(driver.open(file.wstring().c_str()), BtrieveError::Success);
-  driver.deleteAll();  // returns its status as a bool: false = Success
-  ASSERT_EQ(driver.getRecordCount(), 0u);
-}
-
-bool isMarker(const std::filesystem::path &file) {
-  std::ifstream in(file, std::ios::binary);
-  std::string start(strlen(BtrieveDriver::markerMagic()), '\0');
-  in.read(start.data(), start.size());
-  return start == BtrieveDriver::markerMagic();
-}
-
-std::string contentsOf(const std::filesystem::path &file) {
-  std::ifstream in(file, std::ios::binary);
-  return std::string(std::istreambuf_iterator<char>(in), {});
-}
-}  // namespace
-
-// After conversion the Btrieve file is replaced by a marker, and the original
-// is kept untouched in wbtrv32-originals.
-TEST_F(BtrieveDriverTest, ConvertedFileBecomesAMarker) {
-  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
-  const std::string original = contentsOf(dat);
-
-  EXPECT_GT(recordsIn(dat), 0u);
-  EXPECT_TRUE(isMarker(dat));
-  EXPECT_EQ(contentsOf(dat.parent_path() / "wbtrv32-originals" / "MBBSEMU.DAT"),
-            original);
-}
-
-// A real Btrieve file put where its marker was (a reset to a blank file, a
-// restore, an upgrade) is new data: converted, with the old data kept.
-TEST_F(BtrieveDriverTest, BtrieveFilePutBackIsConvertedAgain) {
-  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
-  const unsigned int originalCount = recordsIn(dat);
-  emptyOut(dat);
-
-  std::filesystem::copy_file("assets/MBBSEMU.DAT", dat,
-                             std::filesystem::copy_options::overwrite_existing);
-  std::vector<std::string> notices;
-  EXPECT_EQ(recordsIn(dat, &notices), originalCount);
-  EXPECT_FALSE(notices.empty());
-  EXPECT_TRUE(isMarker(dat));
-
-  std::filesystem::path backup(dat);
-  backup.replace_extension(".db.bak");
-  ASSERT_TRUE(std::filesystem::exists(backup));
-  sqlite3 *connection;
-  ASSERT_EQ(sqlite3_open_v2(backup.string().c_str(), &connection,
-                            SQLITE_OPEN_READONLY, nullptr),
-            SQLITE_OK);
-  sqlite3_stmt *count;
-  ASSERT_EQ(sqlite3_prepare_v2(connection, "SELECT COUNT(*) FROM data_t", -1,
-                               &count, nullptr),
-            SQLITE_OK);
-  ASSERT_EQ(sqlite3_step(count), SQLITE_ROW);
-  EXPECT_EQ(sqlite3_column_int(count, 0), 0);  // the emptied data, kept
-  sqlite3_finalize(count);
-  sqlite3_close(connection);
-}
-
-// Renaming the file renames its data: the renamed file has the current data,
-// not the original file's.
-TEST_F(BtrieveDriverTest, RenamedFileTakesItsDataAlong) {
-  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
-  emptyOut(dat);
-
-  std::filesystem::path renamed = dat.parent_path() / "RENAMED.DAT";
-  std::filesystem::rename(dat, renamed);
-
-  std::vector<std::string> notices;
-  EXPECT_EQ(recordsIn(renamed, &notices), 0u);
-  EXPECT_FALSE(notices.empty());
-  EXPECT_TRUE(std::filesystem::exists(dat.parent_path() / "RENAMED.db"));
-  EXPECT_FALSE(std::filesystem::exists(dat.parent_path() / "MBBSEMU.db"));
-}
-
-// Copying the file copies its data: two independent files with the same
-// current contents.
-TEST_F(BtrieveDriverTest, CopiedFileGetsACopyOfItsData) {
-  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
-  const unsigned int originalCount = recordsIn(dat);
-
-  std::filesystem::path copy = dat.parent_path() / "COPY.DAT";
-  std::filesystem::copy_file(dat, copy);
-  EXPECT_EQ(recordsIn(copy), originalCount);
-
-  // emptying the copy leaves the original alone
-  emptyOut(copy);
-  EXPECT_EQ(recordsIn(copy), 0u);
-  EXPECT_EQ(recordsIn(dat), originalCount);
-}
-
-// An empty file beside a database is the placeholder older versions left:
-// the data is kept and the file becomes a marker.
-TEST_F(BtrieveDriverTest, OldEmptyPlaceholderBecomesAMarker) {
-  std::filesystem::path db(tempPath->copyToTempPath("assets/MBBSEMU.DB"));
-  std::filesystem::path dat = db;
-  dat.replace_extension(".DAT");
-  { std::ofstream empty(dat, std::ios::binary); }
-
-  EXPECT_GT(recordsIn(dat), 0u);
-  EXPECT_TRUE(isMarker(dat));
-}
-
-// A database converted by an older version, beside the unchanged Btrieve file
-// it came from, is adopted as it is: no reconversion, original moved aside.
-TEST_F(BtrieveDriverTest, OlderConversionIsAdoptedNotRedone) {
-  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
-  emptyOut(dat);  // now has a marker-era identity; make it look older:
-  std::filesystem::path db = dat;
-  db.replace_extension(".db");
-  {
-    sqlite3 *connection;
-    ASSERT_EQ(sqlite3_open(db.string().c_str(), &connection), SQLITE_OK);
-    sqlite3_exec(connection, "DROP TABLE db_identity_t", nullptr, nullptr,
-                 nullptr);
-    sqlite3_close(connection);
-  }
-  // put the original Btrieve file back, older than the database
-  std::filesystem::copy_file(dat.parent_path() / "wbtrv32-originals" /
-                                 "MBBSEMU.DAT",
-                             dat,
-                             std::filesystem::copy_options::overwrite_existing);
-  std::filesystem::last_write_time(
-      dat, std::filesystem::last_write_time(db) - std::chrono::hours(1));
-
-  EXPECT_EQ(recordsIn(dat), 0u);  // the database's data, not reconverted
-  EXPECT_TRUE(isMarker(dat));
 }
 
 #pragma pack(push, 1)
@@ -2757,8 +2565,9 @@ class CompositeKeyTest : public BtrieveDriverTest {
   virtual void SetUp() override {
     BtrieveDriverTest::SetUp();
 
-    database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-    driver.reset(new BtrieveDriver(database));
+    auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+    database = ownedDatabase.get();
+    driver = std::make_unique<BtrieveDriver>(std::move(ownedDatabase));
 
     auto recordLoader =
         database->create(_TEXT("unused.db"), createCompositeBtrieveDatabase());
@@ -2767,7 +2576,7 @@ class CompositeKeyTest : public BtrieveDriverTest {
     insertCompositeRecords(*driver);
   }
 
-  SqliteDatabase *database;
+  SqliteDatabase *database;  // owned by driver
   std::unique_ptr<BtrieveDriver> driver;
 };
 
@@ -2953,7 +2762,7 @@ TEST_F(BtrieveDriverTest, UpgradesCompositeKeysFromVersion3) {
   sqlite3_close(db);
 
   {
-    BtrieveDriver driver(new SqliteDatabase());
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
     ASSERT_EQ(driver.open(toWideString(dbPath.c_str()).c_str()),
               BtrieveError::Success);
 
@@ -3039,8 +2848,9 @@ static std::unique_ptr<BtrieveDriver> createIntStringDriver(
   KeyDefinition segments[2] = {stringFirst ? stringSegment : intSegment,
                                stringFirst ? intSegment : stringSegment};
 
-  auto *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  std::unique_ptr<BtrieveDriver> driver(new BtrieveDriver(database));
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  auto driver = std::make_unique<BtrieveDriver>(std::move(ownedDatabase));
   database
       ->create(_TEXT("unused.db"),
                BtrieveDatabase({Key(segments, 2)}, 512, 1,
@@ -3191,8 +3001,9 @@ TEST_F(BtrieveDriverTest, NullableIntegerKeySearchWithNullValue) {
                                   NullAllSegments,
                               false, 0, 0, 0, "", std::vector<char>());
 
-  auto *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
   database
       ->create(_TEXT("unused.db"),
                BtrieveDatabase({Key(&keyDefinition, 1)}, 512, 1,
@@ -3376,8 +3187,9 @@ TEST_F(BtrieveDriverTest, ZstringKeyWithBytesAfterTerminatorIsIndexed) {
                                   NullAllSegments,
                               false, 0, 0, 0, "", std::vector<char>());
 
-  auto *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  BtrieveDriver driver(database);
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  BtrieveDriver driver(std::move(ownedDatabase));
   database
       ->create(_TEXT("unused.db"),
                BtrieveDatabase({Key(&keyDefinition, 1)}, 512, 1,
@@ -3544,8 +3356,9 @@ TEST_F(BtrieveDriverTest, CompositeIntACSLstring) {
 // made of segments.
 static std::unique_ptr<BtrieveDriver> createIntStringDriverWithKey(
     std::vector<KeyDefinition> segments) {
-  auto *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  std::unique_ptr<BtrieveDriver> driver(new BtrieveDriver(database));
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  auto driver = std::make_unique<BtrieveDriver>(std::move(ownedDatabase));
   database
       ->create(_TEXT("unused.db"),
                BtrieveDatabase({Key(segments.data(), segments.size())}, 512, 1,
@@ -3816,7 +3629,7 @@ TEST_F(BtrieveDriverTest, ConvertsCaseInsensitiveKey) {
     file.put(0x05);
   }
 
-  BtrieveDriver driver(new SqliteDatabase());
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
   ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
 
   std::vector<uint8_t> key(32, 0);
@@ -3838,8 +3651,9 @@ static std::unique_ptr<BtrieveDriver> verifyKeyTypeOrder(
     KeyDataType type, uint16_t length, const KeyValues &ordered) {
   KeyDefinition keyDefinition(0, length, 0, type, UseExtendedDataType, false,
                               0, 0, 0, "", std::vector<char>());
-  auto *database = new SqliteDatabase(SQLITE_OPEN_MEMORY);
-  std::unique_ptr<BtrieveDriver> driver(new BtrieveDriver(database));
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(SQLITE_OPEN_MEMORY);
+  SqliteDatabase *database = ownedDatabase.get();
+  auto driver = std::make_unique<BtrieveDriver>(std::move(ownedDatabase));
   database
       ->create(_TEXT("unused.db"),
                BtrieveDatabase({Key(&keyDefinition, 1)}, 512, 1,
@@ -4079,9 +3893,10 @@ static std::unique_ptr<BtrieveDriver> createNullableNameDriver(
                     UseExtendedDataType | keyAttributes, false, 0, 1, 0, "",
                     std::vector<char>())};
 
-  auto *database = new SqliteDatabase(
+  auto ownedDatabase = std::make_unique<SqliteDatabase>(
       path == _TEXT("unused.db") ? SQLITE_OPEN_MEMORY : 0);
-  std::unique_ptr<BtrieveDriver> driver(new BtrieveDriver(database));
+  SqliteDatabase *database = ownedDatabase.get();
+  auto driver = std::make_unique<BtrieveDriver>(std::move(ownedDatabase));
   database
       ->create(path.c_str(),
                BtrieveDatabase({Key(segments, 2)}, 512, 1,
@@ -4203,4 +4018,254 @@ TEST_F(BtrieveDriverTest, UniqueKeyHoldsTrueNulls) {
                 {"CREATE INDEX key_0_index on data_t(key_0_0, key_0_1)",
                  "CREATE UNIQUE INDEX key_0_unique on data_t(key_0_0, "
                  "key_0_1) WHERE key_0_0 = 0"}));
+}
+
+TEST(BtrieveDriver, SqlPathForGivesEachExtensionItsOwnDatabase) {
+  auto expect = [](const wchar_t *btrieveFile, const wchar_t *database) {
+    EXPECT_EQ(sqlPathFor(btrieveFile, L"db"), std::filesystem::path(database));
+  };
+  expect(L"DIR/NAME.DAT", L"DIR/NAME.db");
+  expect(L"DIR/NAME.dat", L"DIR/NAME.db");
+  expect(L"DIR/NAME", L"DIR/NAME.db");
+  expect(L"DIR/NAME.DB", L"DIR/NAME.db");
+  expect(L"DIR/NAME.MST", L"DIR/NAME.MST.db");
+}
+
+// The .db holds the live data once a file has been converted. A .DAT whose
+// timestamp moved but whose contents didn't (copied, touched, restored to the
+// same bytes) must not trigger a reconversion that throws that data away.
+TEST_F(BtrieveDriverTest, TouchedDatKeepsConvertedData) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  {
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+    ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
+    ASSERT_GT(driver.getRecordCount(), 0u);
+    driver.deleteAll();  // returns its status as a bool: false = Success
+    ASSERT_EQ(driver.getRecordCount(), 0u);
+  }
+
+  std::filesystem::last_write_time(
+      dat, std::filesystem::file_time_type::clock::now() +
+               std::chrono::hours(1));
+
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+  ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
+  EXPECT_EQ(driver.getRecordCount(), 0u);
+  EXPECT_TRUE(driver.getNotices().empty());
+}
+
+// Deleting a converted .DAT is how applications reset a file: Btrieve then
+// reports the file missing, so wbtrv32 must too, keeping the data as .db.bak.
+TEST_F(BtrieveDriverTest, DeletedDatIsReportedMissing) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  {
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+    ASSERT_EQ(driver.open(dat.c_str()), BtrieveError::Success);
+  }
+
+  ASSERT_TRUE(std::filesystem::remove(std::filesystem::path(dat)));
+
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+  EXPECT_EQ(driver.open(dat.c_str()), BtrieveError::FileNotFound);
+  EXPECT_FALSE(driver.getNotices().empty());
+
+  std::filesystem::path db(dat), backup(dat);
+  db.replace_extension(".db");
+  backup.replace_extension(".db.bak");
+  EXPECT_FALSE(std::filesystem::exists(db));
+  EXPECT_TRUE(std::filesystem::exists(backup));
+}
+
+// Files that differ only in extension (a .MST master copy beside its .DAT)
+// must not share one database.
+TEST_F(BtrieveDriverTest, SameNameDifferentExtensionsGetSeparateDatabases) {
+  auto dat = tempPath->copyToTempPath("assets/MBBSEMU.DAT");
+  std::filesystem::path mst(dat);
+  mst.replace_extension(".MST");
+  std::filesystem::copy_file(std::filesystem::path("assets/VARIABLE.DAT"), mst);
+
+  BtrieveDriver datDriver(std::make_unique<SqliteDatabase>());
+  ASSERT_EQ(datDriver.open(dat.c_str()), BtrieveError::Success);
+  BtrieveDriver mstDriver(std::make_unique<SqliteDatabase>());
+  ASSERT_EQ(mstDriver.open(mst.wstring().c_str()), BtrieveError::Success);
+
+  EXPECT_NE(datDriver.getRecordCount(), mstDriver.getRecordCount());
+
+  std::filesystem::path mstDb(mst);
+  mstDb += ".db";
+  EXPECT_TRUE(std::filesystem::exists(mstDb));
+  EXPECT_EQ(sqlPathFor(dat, L"db").filename(),
+            std::filesystem::path(L"MBBSEMU.db"));
+  EXPECT_EQ(sqlPathFor(mst, L"db").filename(),
+            std::filesystem::path(L"MBBSEMU.MST.db"));
+}
+
+// Opening the database file itself, by name, again and again must leave it
+// alone: there is no separate Btrieve file to compare it with.
+TEST_F(BtrieveDriverTest, OpeningTheDatabaseDirectlyLeavesItAlone) {
+  auto db = tempPath->copyToTempPath("assets/MBBSEMU.DB");
+  {
+    // the first open upgrades the older schema in place, once
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+    ASSERT_EQ(driver.open(db.c_str()), BtrieveError::Success);
+  }
+  const auto originalSize = std::filesystem::file_size(db);
+  for (int i = 0; i < 3; ++i) {
+    BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+    ASSERT_EQ(driver.open(db.c_str()), BtrieveError::Success);
+    EXPECT_GT(driver.getRecordCount(), 0u);
+    EXPECT_TRUE(driver.getNotices().empty());
+  }
+  std::filesystem::path backup(db);
+  backup += ".bak";
+  EXPECT_FALSE(std::filesystem::exists(backup));
+  EXPECT_EQ(std::filesystem::file_size(db), originalSize);
+}
+
+// --- marker behaviour -------------------------------------------------------
+
+namespace {
+unsigned int recordsIn(const std::filesystem::path &file,
+                       std::vector<std::string> *notices = nullptr) {
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+  if (driver.open(file.wstring().c_str()) != BtrieveError::Success) {
+    return 0xFFFFFFFF;
+  }
+  if (notices != nullptr) {
+    *notices = driver.getNotices();
+  }
+  return driver.getRecordCount();
+}
+
+void emptyOut(const std::filesystem::path &file) {
+  BtrieveDriver driver(std::make_unique<SqliteDatabase>());
+  ASSERT_EQ(driver.open(file.wstring().c_str()), BtrieveError::Success);
+  driver.deleteAll();  // returns its status as a bool: false = Success
+  ASSERT_EQ(driver.getRecordCount(), 0u);
+}
+
+bool isMarker(const std::filesystem::path &file) {
+  std::ifstream in(file, std::ios::binary);
+  std::string start(strlen(BtrieveDriver::markerMagic()), '\0');
+  in.read(start.data(), start.size());
+  return start == BtrieveDriver::markerMagic();
+}
+
+std::string contentsOf(const std::filesystem::path &file) {
+  std::ifstream in(file, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+}  // namespace
+
+// After conversion the Btrieve file is replaced by a marker, and the original
+// is kept untouched in wbtrv32-originals.
+TEST_F(BtrieveDriverTest, ConvertedFileBecomesAMarker) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  const std::string original = contentsOf(dat);
+
+  EXPECT_GT(recordsIn(dat), 0u);
+  EXPECT_TRUE(isMarker(dat));
+  EXPECT_EQ(contentsOf(dat.parent_path() / "wbtrv32-originals" / "MBBSEMU.DAT"),
+            original);
+}
+
+// A real Btrieve file put where its marker was (a reset to a blank file, a
+// restore, an upgrade) is new data: converted, with the old data kept.
+TEST_F(BtrieveDriverTest, BtrieveFilePutBackIsConvertedAgain) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  const unsigned int originalCount = recordsIn(dat);
+  emptyOut(dat);
+
+  std::filesystem::copy_file("assets/MBBSEMU.DAT", dat,
+                             std::filesystem::copy_options::overwrite_existing);
+  std::vector<std::string> notices;
+  EXPECT_EQ(recordsIn(dat, &notices), originalCount);
+  EXPECT_FALSE(notices.empty());
+  EXPECT_TRUE(isMarker(dat));
+
+  std::filesystem::path backup(dat);
+  backup.replace_extension(".db.bak");
+  ASSERT_TRUE(std::filesystem::exists(backup));
+  sqlite3 *connection;
+  ASSERT_EQ(sqlite3_open_v2(backup.string().c_str(), &connection,
+                            SQLITE_OPEN_READONLY, nullptr),
+            SQLITE_OK);
+  sqlite3_stmt *count;
+  ASSERT_EQ(sqlite3_prepare_v2(connection, "SELECT COUNT(*) FROM data_t", -1,
+                               &count, nullptr),
+            SQLITE_OK);
+  ASSERT_EQ(sqlite3_step(count), SQLITE_ROW);
+  EXPECT_EQ(sqlite3_column_int(count, 0), 0);  // the emptied data, kept
+  sqlite3_finalize(count);
+  sqlite3_close(connection);
+}
+
+// Renaming the file renames its data: the renamed file has the current data,
+// not the original file's.
+TEST_F(BtrieveDriverTest, RenamedFileTakesItsDataAlong) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  emptyOut(dat);
+
+  std::filesystem::path renamed = dat.parent_path() / "RENAMED.DAT";
+  std::filesystem::rename(dat, renamed);
+
+  std::vector<std::string> notices;
+  EXPECT_EQ(recordsIn(renamed, &notices), 0u);
+  EXPECT_FALSE(notices.empty());
+  EXPECT_TRUE(std::filesystem::exists(dat.parent_path() / "RENAMED.db"));
+  EXPECT_FALSE(std::filesystem::exists(dat.parent_path() / "MBBSEMU.db"));
+}
+
+// Copying the file copies its data: two independent files with the same
+// current contents.
+TEST_F(BtrieveDriverTest, CopiedFileGetsACopyOfItsData) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  const unsigned int originalCount = recordsIn(dat);
+
+  std::filesystem::path copy = dat.parent_path() / "COPY.DAT";
+  std::filesystem::copy_file(dat, copy);
+  EXPECT_EQ(recordsIn(copy), originalCount);
+
+  // emptying the copy leaves the original alone
+  emptyOut(copy);
+  EXPECT_EQ(recordsIn(copy), 0u);
+  EXPECT_EQ(recordsIn(dat), originalCount);
+}
+
+// An empty file beside a database is the placeholder older versions left:
+// the data is kept and the file becomes a marker.
+TEST_F(BtrieveDriverTest, OldEmptyPlaceholderBecomesAMarker) {
+  std::filesystem::path db(tempPath->copyToTempPath("assets/MBBSEMU.DB"));
+  std::filesystem::path dat = db;
+  dat.replace_extension(".DAT");
+  { std::ofstream empty(dat, std::ios::binary); }
+
+  EXPECT_GT(recordsIn(dat), 0u);
+  EXPECT_TRUE(isMarker(dat));
+}
+
+// A database converted by an older version, beside the unchanged Btrieve file
+// it came from, is adopted as it is: no reconversion, original moved aside.
+TEST_F(BtrieveDriverTest, OlderConversionIsAdoptedNotRedone) {
+  std::filesystem::path dat(tempPath->copyToTempPath("assets/MBBSEMU.DAT"));
+  emptyOut(dat);  // now has a marker-era identity; make it look older:
+  std::filesystem::path db = dat;
+  db.replace_extension(".db");
+  {
+    sqlite3 *connection;
+    ASSERT_EQ(sqlite3_open(db.string().c_str(), &connection), SQLITE_OK);
+    sqlite3_exec(connection, "DROP TABLE db_identity_t", nullptr, nullptr,
+                 nullptr);
+    sqlite3_close(connection);
+  }
+  // put the original Btrieve file back, older than the database
+  std::filesystem::copy_file(dat.parent_path() / "wbtrv32-originals" /
+                                 "MBBSEMU.DAT",
+                             dat,
+                             std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::last_write_time(
+      dat, std::filesystem::last_write_time(db) - std::chrono::hours(1));
+
+  EXPECT_EQ(recordsIn(dat), 0u);  // the database's data, not reconverted
+  EXPECT_TRUE(isMarker(dat));
 }

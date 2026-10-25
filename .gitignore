@@ -7,6 +7,7 @@ vstudio/packages/
 vstudio/.vs/
 vstudio/**/*.user
 nuget/dist/
+vcpkg_installed/
 
 # test bench: real board data, saved DLLs and run results stay local
 test/bench/local/

@@ -3,12 +3,13 @@
 #include <filesystem>
 #include <list>
 #include <string>
+#include <vector>
 
 #include "BtrieveException.h"
 
 #ifdef WIN32
 #define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#include <windows.h>
 #include <combaseapi.h>
 #else
 #include <dirent.h>
@@ -134,11 +135,10 @@ std::basic_string<wchar_t> TempPath::copyToTempPath(const char *filePath) {
 
     size_t numRead;
     size_t numWritten;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[bufferSize]);
-    while ((numRead = fread(reinterpret_cast<void *>(buffer.get()), 1,
-                            bufferSize, sourceFile.get())) > 0) {
-      numWritten = fwrite(reinterpret_cast<void *>(buffer.get()), 1, numRead,
-                          destFile.get());
+    std::vector<uint8_t> buffer(bufferSize);
+    while ((numRead = fread(buffer.data(), 1, buffer.size(),
+                            sourceFile.get())) > 0) {
+      numWritten = fwrite(buffer.data(), 1, numRead, destFile.get());
       if (numWritten != numRead) {
         throw btrieve::BtrieveException(btrieve::BtrieveError::IOError,
                                         "Can't write data\n");

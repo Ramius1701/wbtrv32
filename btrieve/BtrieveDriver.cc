@@ -3,10 +3,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <filesystem>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -23,6 +24,46 @@
 
 namespace btrieve {
 BtrieveDriver::~BtrieveDriver() { close(); }
+
+static inline bool fileExists(const wchar_t *filename) {
+#ifdef WIN32
+  return GetFileAttributes(filename) != INVALID_FILE_ATTRIBUTES;
+#else
+  struct stat stbuf;
+  return stat(toStdString(filename).c_str(), &stbuf) == 0;
+#endif
+}
+
+static std::basic_string<wchar_t> toUpper(
+    const std::basic_string<wchar_t> &value) {
+  std::basic_string<wchar_t> ret(value);
+  for (size_t i = 0; i < ret.size(); ++i) {
+    ret[i] = toupper(ret[i]);
+  }
+  return ret;
+}
+
+static std::basic_string<wchar_t> toLower(
+    const std::basic_string<wchar_t> &value) {
+  std::basic_string<wchar_t> ret(value);
+  for (size_t i = 0; i < ret.size(); ++i) {
+    ret[i] = tolower(ret[i]);
+  }
+  return ret;
+}
+
+std::filesystem::path sqlPathFor(const std::filesystem::path &btrieveFile,
+                                 const std::wstring &sqlExtension) {
+  const std::wstring extension = toLower(btrieveFile.extension().wstring());
+  std::filesystem::path sqlPath = btrieveFile;
+  if (extension.empty() || extension == L".dat" ||
+      extension == L"." + toLower(sqlExtension)) {
+    return sqlPath.replace_extension(sqlExtension);
+  }
+  sqlPath += L".";
+  sqlPath += sqlExtension;
+  return sqlPath;
+}
 
 static inline bool fileExists(const wchar_t *filename,
                               int64_t &fileModificationNanos) {
@@ -56,19 +97,6 @@ static inline bool fileExists(const wchar_t *filename,
 #endif
 }
 
-static std::basic_string<wchar_t> toUpper(
-    const std::basic_string<wchar_t> &value) {
-  std::basic_string<wchar_t> ret(value);
-  for (size_t i = 0; i < ret.size(); ++i) {
-    ret[i] = toupper(ret[i]);
-  }
-  return ret;
-}
-
-#ifdef _WIN32
-#define unlink _wunlink
-#endif
-
 // FNV-1a over the whole file: cheap, and only computed when converting or
 // when a file's size or timestamp no longer matches what was recorded.
 static SourceFingerprint fingerprintOf(const wchar_t *fileName, uint64_t size,
@@ -91,37 +119,14 @@ static SourceFingerprint fingerprintOf(const wchar_t *fileName, uint64_t size,
   return fingerprint;
 }
 
-static std::basic_string<wchar_t> toLower(
-    const std::basic_string<wchar_t> &value) {
-  std::basic_string<wchar_t> ret(value);
-  for (size_t i = 0; i < ret.size(); ++i) {
-    ret[i] = tolower(ret[i]);
-  }
-  return ret;
-}
 
-std::filesystem::path BtrieveDriver::sqlPathFor(
-    const std::filesystem::path &btrieveFile,
-    const std::wstring &sqlExtension) {
-  const std::wstring extension = toLower(btrieveFile.extension().wstring());
-  std::filesystem::path sqlPath = btrieveFile;
-  // .DAT as always; the database's own extension too, since callers may name
-  // an already-converted database directly
-  if (extension.empty() || extension == L".dat" ||
-      extension == L"." + toLower(sqlExtension)) {
-    return sqlPath.replace_extension(sqlExtension);
-  }
-  sqlPath += L".";
-  sqlPath += sqlExtension;
-  return sqlPath;
-}
 
 // Moves a .db (and its -wal/-shm, which may hold committed data) aside as
 // .db.bak instead of deleting it, replacing any previous backup. Returns false
 // if the .db couldn't be moved (e.g. it's open elsewhere), leaving it as it
 // was. backupName receives the backup's file name.
-static bool backupDatabase(const std::filesystem::path &dbPath,
-                           std::string &backupName) {
+bool backupDatabase(const std::filesystem::path &dbPath,
+                    std::string &backupName) {
   std::filesystem::path backup = dbPath;
   backup += ".bak";
   backupName = backup.filename().string();
@@ -390,6 +395,19 @@ BtrieveError BtrieveDriver::open(const wchar_t *fileName, OpenMode openMode) {
   openedFilename = fileName;
   notices.clear();
 
+  // Under the parity shim stock Btrieve keeps writing the real file, so it
+  // must stay a Btrieve file: no markers, the database as it is.
+  if (!trackSourceFile) {
+    if (fileExists(toWideString(dbPath).c_str())) {
+      return openDatabase(dbPath, openMode);
+    }
+    std::filesystem::path dbPathUpper =
+        sqlPathFor(file, toUpper(sqlDatabase->getFileExtension()));
+    if (fileExists(toWideString(dbPathUpper).c_str())) {
+      return openDatabase(dbPathUpper, openMode);
+    }
+  }
+
   bool datExists = fileExists(fileName, fileModificationTimeDat);
   bool dbExists =
       fileExists(toWideString(dbPath).c_str(), fileModificationTimeDb);
@@ -570,10 +588,14 @@ BtrieveError BtrieveDriver::open(const wchar_t *fileName, OpenMode openMode) {
       fingerprintOf(fileName, datSize, fileModificationTimeDat));
   sqlDatabase->close();
 
-  sqlDatabase->writeIdentity(dbPath, {newDatabaseId(), file.filename().string()});
-  takeOver(file, dbPath);
+  if (trackSourceFile) {
+    sqlDatabase->writeIdentity(dbPath,
+                               {newDatabaseId(), file.filename().string()});
+    takeOver(file, dbPath);
+  }
   return openDatabase(dbPath, openMode);
 }
+
 
 void BtrieveDriver::close() {
   sqlDatabase->close();

@@ -14,14 +14,35 @@
 #include "Text.h"
 
 namespace btrieve {
+// Where a Btrieve file's data lives once converted. NAME.DAT keeps the NAME.db
+// it always had (and NAME.db names itself); any other extension gets
+// NAME.EXT.db, so files that differ only in extension (a .MST master copy
+// beside its .DAT, say) never share one database.
+std::filesystem::path sqlPathFor(const std::filesystem::path &btrieveFile,
+                                 const std::wstring &sqlExtension);
+
+// Moves a .db (and its -wal/-shm, which may hold committed data) aside as
+// .db.bak instead of deleting it, replacing any previous backup. Returns false
+// if the .db couldn't be moved (e.g. it's open elsewhere), leaving it as it
+// was. backupName receives the backup's file name.
+bool backupDatabase(const std::filesystem::path &dbPath,
+                    std::string &backupName);
+
 // Implements the Btrieve Driver functionality, e.g. querying and iterating
 // through records.
 class BtrieveDriver {
  public:
-  BtrieveDriver(SqlDatabase *sqlDatabase_) : sqlDatabase(sqlDatabase_) {}
+  // With trackSourceFile_, a converted Btrieve file is replaced by a marker
+  // for its database (see markerMagic()). Turn it off when something else
+  // keeps writing the .DAT, as stock Btrieve does under the parity shim.
+  BtrieveDriver(std::unique_ptr<SqlDatabase> sqlDatabase_,
+                bool trackSourceFile_ = true)
+      : sqlDatabase(std::move(sqlDatabase_)),
+        trackSourceFile(trackSourceFile_) {}
 
   BtrieveDriver(BtrieveDriver &&driver)
-      : sqlDatabase(std::move(driver.sqlDatabase)) {}
+      : sqlDatabase(std::move(driver.sqlDatabase)),
+        trackSourceFile(driver.trackSourceFile) {}
 
   ~BtrieveDriver();
 
@@ -91,59 +112,18 @@ class BtrieveDriver {
 
   std::basic_string<wchar_t> getOpenedFilename() { return openedFilename; }
 
-  // Btrieve keeps a position (and key path) per open handle, not per file.
-  // Handles opened on the same file share one driver, so each handle owns a
-  // Cursor and activates it before every operation; the driver swaps the
-  // previous handle's state out and this one's in.
-  struct Cursor {
-    unsigned int position = 0;
-    bool currentRecord = false;
-    std::unique_ptr<Query> query;
-  };
+  std::optional<OwnerInfo> getOwner() { return sqlDatabase->getOwner(); }
 
-  void activate(Cursor *cursor) {
-    if (activeCursor == cursor) {
-      return;
-    }
-    if (activeCursor != nullptr) {
-      activeCursor->position = sqlDatabase->getPosition();
-      activeCursor->currentRecord = sqlDatabase->hasCurrentRecord();
-      activeCursor->query = std::move(previousQuery);
-    }
-    sqlDatabase->setPosition(cursor != nullptr ? cursor->position : 0);
-    if (cursor == nullptr || !cursor->currentRecord) {
-      sqlDatabase->clearCurrentRecord();
-    }
-    previousQuery =
-        cursor != nullptr ? std::move(cursor->query) : std::unique_ptr<Query>();
-    activeCursor = cursor;
-  }
-
-  bool readOwner(OwnerInfo &owner) {
-    return sqlDatabase->readOwner(databasePath, owner);
-  }
-  bool writeOwner(const OwnerInfo *owner) {
-    return sqlDatabase->writeOwner(databasePath, owner);
+  void setOwner(const std::optional<OwnerInfo> &owner) {
+    sqlDatabase->setOwner(owner);
   }
 
   bool beginUserTransaction() { return sqlDatabase->beginUserTransaction(); }
   bool endUserTransaction() { return sqlDatabase->endUserTransaction(); }
-  bool abortUserTransaction() { return sqlDatabase->abortUserTransaction(); }
-
-  // Called before a handle's Cursor is destroyed.
-  void release(Cursor *cursor) {
-    if (activeCursor == cursor) {
-      activeCursor = nullptr;
-    }
+  bool abortUserTransaction() {
+    previousQuery.reset();
+    return sqlDatabase->abortUserTransaction();
   }
-
-  // Where a Btrieve file's data lives once converted. NAME.DAT keeps the
-  // NAME.db it always had (and NAME.db names itself); any other extension gets
-  // NAME.EXT.db, so files that differ only in extension (a .MST master copy
-  // beside its .DAT, say) never share one database.
-  static std::filesystem::path sqlPathFor(
-      const std::filesystem::path &btrieveFile,
-      const std::wstring &sqlExtension);
 
   // Once a Btrieve file's data is in its database, the file itself is replaced
   // by a small marker naming that database and its id (the original is kept in
@@ -165,14 +145,37 @@ class BtrieveDriver {
   // converted, and where the previous .db was kept.
   const std::vector<std::string> &getNotices() const { return notices; }
 
- private:
-  std::unique_ptr<SqlDatabase> sqlDatabase;
-  std::unique_ptr<Query> previousQuery;
-  std::basic_string<wchar_t> openedFilename;
-  std::vector<std::string> notices;
-  Cursor *activeCursor = nullptr;
-  std::filesystem::path databasePath;  // set when the database is opened
+  // Btrieve keeps a position, current record and key path per open handle,
+  // not per file. Handles on the same file share one driver, so each handle
+  // owns a Cursor and activates it before every operation: the driver saves
+  // the previous handle's state into its Cursor and puts this one's in place.
+  struct Cursor {
+    unsigned int position = 0;
+    bool currentRecord = false;
+    std::unique_ptr<Query> query;
+  };
 
+  void activate(const std::shared_ptr<Cursor> &cursor) {
+    // a closed handle's Cursor is gone, so its state is simply dropped
+    std::shared_ptr<Cursor> active = activeCursor.lock();
+    if (active == cursor) {
+      return;
+    }
+    if (active != nullptr) {
+      active->position = sqlDatabase->getPosition();
+      active->currentRecord = sqlDatabase->hasCurrentRecord();
+      active->query = std::move(previousQuery);
+    }
+    sqlDatabase->setPosition(cursor != nullptr ? cursor->position : 0);
+    if (cursor == nullptr || !cursor->currentRecord) {
+      sqlDatabase->clearCurrentRecord();
+    }
+    previousQuery =
+        cursor != nullptr ? std::move(cursor->query) : std::unique_ptr<Query>();
+    activeCursor = cursor;
+  }
+
+ private:
   BtrieveError openDatabase(const std::filesystem::path &database,
                             OpenMode openMode);
   bool takeOver(const std::filesystem::path &file,
@@ -181,6 +184,15 @@ class BtrieveDriver {
                             const Marker &marker,
                             const std::filesystem::path &database,
                             bool databaseExists);
+
+  std::unique_ptr<SqlDatabase> sqlDatabase;
+  bool trackSourceFile;
+  std::unique_ptr<Query> previousQuery;
+  std::basic_string<wchar_t> openedFilename;
+  std::vector<std::string> notices;
+  std::filesystem::path databasePath;  // set when the database is opened
+  // Not owned: each handle owns its Cursor, which may be closed at any time.
+  std::weak_ptr<Cursor> activeCursor;
 };
 }  // namespace btrieve
 #endif

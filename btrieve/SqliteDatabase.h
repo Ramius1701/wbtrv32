@@ -33,6 +33,9 @@ class SqliteDatabase : public SqlDatabase {
 
   virtual bool readSourceFingerprint(SourceFingerprint &fingerprint) override;
 
+  virtual bool writeSourceFingerprint(
+      const SourceFingerprint &fingerprint) override;
+
   virtual bool readIdentity(const std::filesystem::path &database,
                             DatabaseIdentity &identity) override;
 
@@ -42,17 +45,13 @@ class SqliteDatabase : public SqlDatabase {
   virtual bool copyDatabase(const std::filesystem::path &from,
                             const std::filesystem::path &to) override;
 
-  virtual bool readOwner(const std::filesystem::path &database,
-                         OwnerInfo &owner) override;
-  virtual bool writeOwner(const std::filesystem::path &database,
-                          const OwnerInfo *owner) override;
+  virtual std::optional<OwnerInfo> getOwner() override;
+
+  virtual void setOwner(const std::optional<OwnerInfo> &owner) override;
 
   virtual bool beginUserTransaction() override;
   virtual bool endUserTransaction() override;
   virtual bool abortUserTransaction() override;
-
-  virtual bool writeSourceFingerprint(
-      const SourceFingerprint &fingerprint) override;
 
   virtual BtrieveError stepFirst() override;
   virtual BtrieveError stepLast() override;

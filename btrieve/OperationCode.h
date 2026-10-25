@@ -76,10 +76,12 @@ enum OperationCode {
   //[UsesPreviousQuery]
   WITH_RECORD_LOCK(StepNext, 0x18),
 
-  //[AcquiresData]
-  //[UsesPreviousQuery]
+  // Extended operations: filtered reads of many records in one call
   WITH_RECORD_LOCK(GetNextExtended, 0x24),
   WITH_RECORD_LOCK(GetPreviousExtended, 0x25),
+
+  //[AcquiresData]
+  //[UsesPreviousQuery]
   WITH_RECORD_LOCK(StepNextExtended, 0x26),
 
   //[AcquiresData]
@@ -90,6 +92,17 @@ enum OperationCode {
   //[UsesPreviousQuery]
   WITH_RECORD_LOCK(StepPreviousExtended, 0x27),
   InsertExtended = 0x28,
+
+  // Puts files in backup mode (key number 0) and takes them out again (1 or
+  // 2). A database in one SQLite file needs no backup mode.
+  ContinuousOperation = 0x2A,
+
+  // Information about an open file; only the listing of extension files
+  // (subfunction 1) is answered
+  StatExtended = 0x41,
+
+  // Logs in to (key number 0) or out of (1) a database server
+  LoginLogout = 0x4E,
 
   // Query Operations
   //[QueryOnly]

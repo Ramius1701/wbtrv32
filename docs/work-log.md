@@ -15,14 +15,64 @@ why, and where things are. Add a new dated entry at the top for each session.
 | Test bench | `test/bench/` in this repo; private data, saved DLLs and results in `test/bench/local/` (ignored by git) |
 | Original fix write-up | [`docs/wbtrv32-fixes.md`](wbtrv32-fixes.md) (9 Oct 2026); the `wbtrv32-local-fixes*.patch` files it came with are in `test/bench/local/patches/` |
 
-**Build and test (Windows):**
+**Build and test (Windows):** Abseil comes from vcpkg, cloned at `S:\Github\vcpkg`
+(no `vcpkg integrate install` needed). The first build compiles Abseil into
+`vcpkg_installed/`.
 
 ```
-"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" vstudio\vstudio.sln /t:tests /p:Configuration=Release /p:Platform=x86
+$vc = "S:\Github\vcpkg"
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" vstudio\vstudio.sln /t:tests /p:Configuration=Release /p:Platform=x86 "/p:VcpkgRoot=$vc" "/p:ForceImportBeforeCppTargets=$vc\scripts\buildsystems\msbuild\vcpkg.props" "/p:ForceImportAfterCppTargets=$vc\scripts\buildsystems\msbuild\vcpkg.targets"
 bin\tests\Win32\Release\tests.exe
 ```
 
 The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
+
+---
+
+## 2026-10-25: upstream 1.1.1 merged
+
+Merged `origin/main` (23 commits, version 1.1.1) into `main`. Upstream's
+versions are now the base for every fix it ported (PRs #36 to #47) and for
+its new work: Abseil logging, smart pointers, Get Direct/Chunk, stubs for
+42/65/78, and DebugAttach.
+
+**Kept from this fork:**
+
+- **File handling:** markers in place of converted files, `wbtrv32-originals/`,
+  following renames and copies, status 12 for a deleted file, `.db.bak`
+  backups, and the `dat_source_t` fingerprint. Notices go to `wbtrv32.log` at
+  warning level. Upstream's "CONVERTED DATABASES" folder, placeholder `.DAT`,
+  `source_t` and `refreshFromChangedSource` were dropped. With
+  `WBTRV32_DAT_TRACKING=0` (the parity shim), no markers are written.
+- **Transactions:** savepoints inside the application's transaction (your
+  `SqliteTransaction.h`), and End/Abort on every file returning 36 if any
+  file fails.
+
+**Taken from upstream, as asked:**
+
+- **Joining on first write:** a file joins the transaction when it is first
+  written, not at Begin, so files only read stay unlocked for other board
+  processes.
+- **Create with key -1:** the `.DAT` (or marker) decides whether the file
+  exists. A `.db` left without one is kept as `.db.bak` and the file is
+  created afresh, instead of returning 59.
+- **Status 22 fill on Step and Get Direct**, along with Get.
+
+**Small changes:**
+
+- Error 39 is upstream's `TransactionNotActive`, and 36 `TransactionError`
+  was added back.
+- Upstream's Create tests were adapted to `.db.bak`. Its
+  `CreateOverwriteLeavesRealDatAlone`, the "CONVERTED DATABASES" tests and
+  the old `loadPAT` offset change were dropped, since upstream's
+  `locatePATs` covers that case.
+
+**Build:** vcpkg was cloned to `S:\Githubcpkg` (commit `0c2a9ace`,
+bootstrapped with telemetry off) for Abseil. See the build command at the
+top of this log.
+
+**Result:** 394 of 394 tests pass (Release, x86). Not yet run on the live
+board.
 
 ---
 
