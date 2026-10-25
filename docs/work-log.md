@@ -67,7 +67,7 @@ its new work: Abseil logging, smart pointers, Get Direct/Chunk, stubs for
   the old `loadPAT` offset change were dropped, since upstream's
   `locatePATs` covers that case.
 
-**Build:** vcpkg was cloned to `S:\Githubcpkg` (commit `0c2a9ace`,
+**Build:** vcpkg was cloned to `S:\Github\vcpkg` (commit `0c2a9ace`,
 bootstrapped with telemetry off) for Abseil. See the build command at the
 top of this log.
 
