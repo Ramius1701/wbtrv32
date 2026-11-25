@@ -15,17 +15,41 @@ why, and where things are. Add a new dated entry at the top for each session.
 | Test bench | `test/bench/` in this repo; private data, saved DLLs and results in `test/bench/local/` (ignored by git) |
 | Original fix write-up | [`docs/wbtrv32-fixes.md`](wbtrv32-fixes.md) (9 Oct 2026); the `wbtrv32-local-fixes*.patch` files it came with are in `test/bench/local/patches/` |
 
-**Build and test (Windows):** Abseil comes from vcpkg, cloned at `S:\Github\vcpkg`
+**Build and test (Windows):** Abseil comes from vcpkg, cloned at `G:\vcpkg`
 (no `vcpkg integrate install` needed). The first build compiles Abseil into
 `vcpkg_installed/`.
 
 ```
-$vc = "S:\Github\vcpkg"
+$vc = "G:\vcpkg"
 & "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" vstudio\vstudio.sln /t:tests /p:Configuration=Release /p:Platform=x86 "/p:VcpkgRoot=$vc" "/p:ForceImportBeforeCppTargets=$vc\scripts\buildsystems\msbuild\vcpkg.props" "/p:ForceImportAfterCppTargets=$vc\scripts\buildsystems\msbuild\vcpkg.targets"
 bin\tests\Win32\Release\tests.exe
 ```
 
 The DLL lands in `bin\wbtrv32\Win32\Release\wbtrv32.dll`.
+
+---
+
+## 2026-11-25: upstream PR #60 merged
+
+Merged `origin/main` (one commit, `1d2896f`) into `main` as `4156c6d`, with no
+conflicts. PR #60, by John Fisher (jnfisher) and merged by paladine on
+24 Nov: when Btrieve 6.15 grows a v6 file past 30 PAT pairs it leaves a
+4,096-byte gap before PAT pair 31, so with page sizes that don't divide
+4,096 (1,536, 2,560, 3,072, 3,584) every later page was read in the wrong
+place. Their example is MajorMUD's rooms file, which loaded 11,226 of 26,720
+rooms. PAT pairs and pages are now tracked by byte offset (`locatePATs`,
+`toFileOffset`, `buildV6PageMap`). The newest-copy and PAT-allocated rules
+of this fork's page map are unchanged. It adds the 18 MB test file
+`assets/PAT31GAP.DAT`.
+
+**The live board isn't affected:** `WCCMP002` (rooms) and `WCCMSG2`
+(messages) use 4,096-byte pages and are far too small to reach PAT pair 31
+(13,871 and 293 pages, against about 30,722). Both were converted on
+20 Oct. The board DLL was not changed.
+
+**Result:** 403 of 403 tests pass (Release, x86), including PR #60's six
+new tests. The repo is now at `G:\wbtrv32` and vcpkg at `G:\vcpkg`; the
+build command at the top of this log is updated.
 
 ---
 
